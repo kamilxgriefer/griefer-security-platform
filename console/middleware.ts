@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import { mayAccess } from "@/lib/roles";
 import { SESSION_COOKIE, verify } from "@/lib/session";
 
 /**
@@ -30,6 +31,31 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
     if (pathname === "/login") {
       return NextResponse.redirect(new URL("/", request.url));
     }
+
+    // Authenticated is not the same as authorised. The role is checked here,
+    // in front of everything, rather than in each page: a page that forgets
+    // the check is invisible until somebody finds it, whereas a route missing
+    // from the table below simply stays available to everyone, which is the
+    // failure that gets noticed.
+    if (!mayAccess(session.role, pathname)) {
+      if (pathname.startsWith("/api/")) {
+        return NextResponse.json(
+          {
+            error: {
+              code: "forbidden",
+              message: "This account does not have access to that resource.",
+            },
+          },
+          { status: 403 },
+        );
+      }
+      // A page an analyst may not see returns them to the dashboard rather
+      // than to the login form. Being asked to sign in again when already
+      // signed in reads as a broken session, and invites re-entering a
+      // password somewhere unexpected.
+      return NextResponse.redirect(new URL("/?denied=1", request.url));
+    }
+
     return NextResponse.next();
   }
 

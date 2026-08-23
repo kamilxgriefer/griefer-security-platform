@@ -11,7 +11,7 @@ vi.mock("next/navigation", () => ({
 
 describe("Nav", () => {
   it("marks the current section for assistive technology", () => {
-    render(<Nav />);
+    render(<Nav username="admin" role="admin" />);
 
     const nav = screen.getByRole("navigation", { name: /primary/i });
     const current = within(nav).getAllByRole("link", { name: "Incidents" })[0];
@@ -23,7 +23,7 @@ describe("Nav", () => {
 
   it("collapses behind a disclosure button on a narrow screen", async () => {
     const user = userEvent.setup();
-    render(<Nav />);
+    render(<Nav username="admin" role="admin" />);
 
     const toggle = screen.getByRole("button", { name: /open navigation/i });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
@@ -44,13 +44,40 @@ describe("Nav", () => {
 
   it("closes the mobile menu when a destination is chosen", async () => {
     const user = userEvent.setup();
-    render(<Nav />);
+    render(<Nav username="admin" role="admin" />);
 
     await user.click(screen.getByRole("button", { name: /open navigation/i }));
     const mobileList = document.getElementById("primary-navigation-mobile") as HTMLElement;
     await user.click(within(mobileList).getByRole("link", { name: "Dashboard" }));
 
     expect(document.getElementById("primary-navigation-mobile")).toBeNull();
+  });
+
+  it("hides administrator destinations from an analyst", () => {
+    render(<Nav username="nadia" role="analyst" />);
+
+    const nav = screen.getByRole("navigation", { name: /primary/i });
+    expect(within(nav).queryByRole("link", { name: "Audit trail" })).toBeNull();
+    expect(within(nav).queryByRole("link", { name: "Accounts" })).toBeNull();
+    // The analyst's own work is still there.
+    expect(within(nav).getAllByRole("link", { name: "Incidents" })[0]).toBeInTheDocument();
+  });
+
+  it("shows administrator destinations to an administrator", () => {
+    render(<Nav username="admin" role="admin" />);
+
+    const nav = screen.getByRole("navigation", { name: /primary/i });
+    expect(within(nav).getAllByRole("link", { name: "Audit trail" })[0]).toBeInTheDocument();
+    expect(within(nav).getAllByRole("link", { name: "Accounts" })[0]).toBeInTheDocument();
+  });
+
+  it("names the signed-in account and its role", () => {
+    render(<Nav username="nadia" role="analyst" />);
+
+    const nav = screen.getByRole("navigation", { name: /primary/i });
+    expect(within(nav).getAllByText("nadia")[0]).toBeInTheDocument();
+    // Shown so that a missing link reads as a permission, not an outage.
+    expect(within(nav).getAllByText("Analyst")[0]).toBeInTheDocument();
   });
 });
 

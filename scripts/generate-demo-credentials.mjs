@@ -19,7 +19,19 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 const SCRYPT = { N: 32768, r: 8, p: 1, keylen: 64, maxmem: 64 * 1024 * 1024 };
-const USERNAME = "demo-admin";
+
+/**
+ * The two accounts a deployment starts with.
+ *
+ * The administrator is provisioned here rather than only from inside the
+ * console, because an account store that can only be populated by an existing
+ * administrator is one forgotten password away from a platform nobody can
+ * enter. Further analysts are created by the administrator from the console.
+ */
+const ACCOUNTS = [
+  { key: "ADMIN", username: "admin", role: "Administrator", can: "everything, including the audit trail and account management" },
+  { key: "ANALYST", username: "analyst", role: "Analyst", can: "the dashboard and incidents; not the audit trail, not account management" },
+];
 const CREDENTIALS_PATH = join(homedir(), ".config", "griefer", "demo-credentials.txt");
 
 function scrypt(password, salt, keylen, options) {
@@ -56,9 +68,15 @@ function passphrase(words = 5) {
 }
 
 async function main() {
-  const password = passphrase();
-  const salt = randomBytes(16).toString("hex");
-  const hash = (await scrypt(password, Buffer.from(salt, "hex"), SCRYPT.keylen, SCRYPT)).toString("hex");
+  const provisioned = [];
+  for (const account of ACCOUNTS) {
+    const password = passphrase();
+    const salt = randomBytes(16).toString("hex");
+    const hash = (
+      await scrypt(password, Buffer.from(salt, "hex"), SCRYPT.keylen, SCRYPT)
+    ).toString("hex");
+    provisioned.push({ ...account, password, salt, hash });
+  }
 
   const sessionSecret = randomBytes(48).toString("base64url");
   const internalToken = randomBytes(48).toString("base64url");
@@ -79,10 +97,15 @@ async function main() {
     CREDENTIALS_PATH,
     [
       `GRIEFER demo URL: ${existingUrl}`,
-      `Username: ${USERNAME}`,
-      `Password: ${password}`,
       "",
-      "This file holds the demonstration login only.",
+      ...provisioned.flatMap((account) => [
+        `${account.role}`,
+        `  Username: ${account.username}`,
+        `  Password: ${account.password}`,
+        `  Can see:  ${account.can}`,
+        "",
+      ]),
+      "This file holds the console logins only.",
       "It deliberately contains no platform token, no database connection string,",
       "no session secret and no service credential.",
       "",
@@ -99,9 +122,11 @@ async function main() {
   process.stdout.write(
     [
       "# Console service",
-      `DEMO_USERNAME=${USERNAME}`,
-      `DEMO_PASSWORD_SALT=${salt}`,
-      `DEMO_PASSWORD_HASH=${hash}`,
+      ...provisioned.flatMap((account) => [
+        `GRIEFER_${account.key}_USERNAME=${account.username}`,
+        `GRIEFER_${account.key}_PASSWORD_SALT=${account.salt}`,
+        `GRIEFER_${account.key}_PASSWORD_HASH=${account.hash}`,
+      ]),
       `DEMO_SESSION_SECRET=${sessionSecret}`,
       "",
       "# Console and API — must be identical in both",
@@ -111,13 +136,13 @@ async function main() {
       "NATS_USER=griefer",
       `NATS_PASSWORD=${natsPassword}`,
       "",
-      `# The login password was written to ${CREDENTIALS_PATH} (mode 600).`,
-      "# It is not printed here on purpose.",
+      `# The login passwords were written to ${CREDENTIALS_PATH} (mode 600).`,
+      "# They are not printed here on purpose.",
       "",
     ].join("\n"),
   );
 
-  process.stderr.write(`\nDemonstration password written to ${CREDENTIALS_PATH}\n`);
+  process.stderr.write(`\n${provisioned.length} console passwords written to ${CREDENTIALS_PATH}\n`);
 }
 
 main().catch((error) => {

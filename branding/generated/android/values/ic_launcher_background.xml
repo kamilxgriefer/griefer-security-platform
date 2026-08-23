@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive icon background. Measured from the approved artwork. -->
+<resources>
+    <color name="ic_launcher_background">#010104</color>
+</resources>

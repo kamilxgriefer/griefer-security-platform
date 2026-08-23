@@ -1,0 +1,16 @@
+# The console is intentionally NOT a workspace member.
+#
+# It has its own lockfile and its own dependency policy, and its production
+# image installs from that lockfile alone. Pulling it into a workspace here
+# would put repository tooling — sharp and its native binaries — into the
+# console's dependency graph, and therefore into the resolution its Docker
+# build has to trust.
+packages: []
+
+# Build scripts are opt-in. A postinstall runs with full user privileges at
+# install time, which makes it the shortest path from a compromised dependency
+# to a compromised developer machine.
+allowBuilds:
+  # sharp ships prebuilt libvips binaries and needs its install script to place
+  # the right one for this platform. It is the reason this package.json exists.
+  sharp: true

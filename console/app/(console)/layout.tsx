@@ -1,0 +1,32 @@
+import type { ReactNode } from "react";
+
+import { Nav } from "@/components/Nav";
+import { SimulationBanner } from "@/components/SimulationBanner";
+
+/**
+ * Layout for every page behind the access gate.
+ *
+ * middleware.ts guarantees a valid session before any of this renders, so the
+ * chrome — and the incident data inside it — never reaches an anonymous
+ * visitor.
+ */
+export default function ConsoleLayout({ children }: { readonly children: ReactNode }) {
+  return (
+    <>
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded focus:bg-[var(--color-surface-overlay)] focus:px-3 focus:py-2"
+      >
+        Skip to content
+      </a>
+      <SimulationBanner />
+      <Nav />
+      <main id="main" className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6">
+        {children}
+      </main>
+      <footer className="mx-auto w-full max-w-[1400px] px-4 pb-8 text-[11px] text-[var(--color-text-muted)] sm:px-6">
+        GRIEFER v0.1 — a research and engineering prototype. All data shown is synthetic.
+      </footer>
+    </>
+  );
+}

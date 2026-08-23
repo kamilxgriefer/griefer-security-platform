@@ -1,10 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
-// server-only throws when imported outside a React Server Component. The module
-// under test is genuinely server-only; stubbing the guard is what lets its error
-// handling be tested at all.
-vi.mock("server-only", () => ({}));
-
 const { ApiError, getSystemStatus, listIncidents, settled } = await import("@/lib/api");
 
 describe("GRIEFER API client", () => {

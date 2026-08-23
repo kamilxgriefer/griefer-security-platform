@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://griefer.dev/schemas/events/security-event.v0.1.schema.json",
+  "title": "GRIEFER SecurityEvent",
+  "description": "Minimal normalized security event. Inspired by the OCSF class layout (activity + actor + target + metadata) but intentionally reduced. GRIEFER does NOT claim OCSF conformance in v0.1 — see docs/DATA_MODEL.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "timestamp",
+    "source_type",
+    "source_name",
+    "event_type",
+    "category",
+    "severity"
+  ],
+  "properties": {
+    "id": {
+      "description": "Producer-supplied identifier. Server assigns a ULID-like id when absent.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "schema_version": {
+      "description": "Version of this event schema. Only 0.1 is accepted by the v0.1 API.",
+      "type": "string",
+      "enum": ["0.1"]
+    },
+    "timestamp": {
+      "description": "When the event occurred at the source. RFC 3339, MUST carry a timezone; normalized to UTC on ingest.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "received_at": {
+      "description": "Server-assigned ingest time (UTC). Ignored if supplied by the producer.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_type": {
+      "description": "Class of telemetry producer.",
+      "type": "string",
+      "enum": [
+        "identity_provider",
+        "endpoint_agent",
+        "cloud_audit",
+        "application",
+        "network",
+        "secret_manager",
+        "source_control",
+        "synthetic_fixture"
+      ]
+    },
+    "source_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "event_type": {
+      "description": "Producer-neutral event verb, lower_snake_case.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "category": {
+      "description": "Evidence category. Correlation treats these as independent evidence classes; the Policy Kernel counts DISTINCT categories when deciding whether automation is permitted.",
+      "type": "string",
+      "enum": [
+        "authentication",
+        "session_anomaly",
+        "privilege_escalation",
+        "credential_access",
+        "cloud_access",
+        "data_access",
+        "process_execution",
+        "network_activity",
+        "configuration_change"
+      ]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["informational", "low", "medium", "high", "critical"]
+    },
+    "actor": {
+      "$ref": "#/$defs/actor"
+    },
+    "target": {
+      "$ref": "#/$defs/target"
+    },
+    "device": {
+      "$ref": "#/$defs/device"
+    },
+    "network": {
+      "$ref": "#/$defs/network"
+    },
+    "cloud": {
+      "$ref": "#/$defs/cloud"
+    },
+    "raw_reference": {
+      "$ref": "#/$defs/raw_reference"
+    },
+    "labels": {
+      "description": "Bounded key/value annotations. Labels are DATA. They can never carry an executive instruction — see internal/events/guard.go.",
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "pattern": "^[a-z0-9_.]{1,48}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 256
+      }
+    },
+    "correlation_id": {
+      "description": "Optional producer-side trace/correlation identifier.",
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]*$"
+    }
+  },
+  "$defs": {
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["identity", "account", "service", "application", "unknown"]
+        },
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 128 },
+        "domain": { "type": "string", "maxLength": 128 },
+        "session_id": { "type": "string", "maxLength": 128 },
+        "privileged": { "type": "boolean" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "identity",
+            "account",
+            "session",
+            "endpoint",
+            "ip_address",
+            "application",
+            "secret",
+            "cloud_resource",
+            "repository",
+            "service"
+          ]
+        },
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 128 },
+        "criticality": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "critical"]
+        }
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "hostname": { "type": "string", "maxLength": 253 },
+        "os": { "type": "string", "maxLength": 64 },
+        "managed": { "type": "boolean" },
+        "compliant": { "type": "boolean" }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_ip": { "type": "string", "maxLength": 45 },
+        "destination_ip": { "type": "string", "maxLength": 45 },
+        "asn": { "type": "string", "maxLength": 64 },
+        "country": { "type": "string", "maxLength": 2, "pattern": "^[A-Z]{0,2}$" },
+        "first_seen_for_actor": {
+          "description": "Producer assertion that this source address is new for the actor.",
+          "type": "boolean"
+        }
+      }
+    },
+    "cloud": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["aws", "azure", "gcp", "other"]
+        },
+        "account_id": { "type": "string", "maxLength": 128 },
+        "region": { "type": "string", "maxLength": 64 },
+        "resource_id": { "type": "string", "maxLength": 256 },
+        "resource_type": { "type": "string", "maxLength": 96 }
+      }
+    },
+    "raw_reference": {
+      "description": "Pointer to the original payload held in the producer's own store. GRIEFER deliberately does NOT accept unbounded raw payloads inline.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri"],
+      "properties": {
+        "uri": { "type": "string", "maxLength": 512 },
+        "digest": {
+          "type": "string",
+          "maxLength": 71,
+          "pattern": "^$|^sha256:[a-f0-9]{64}$"
+        },
+        "size_bytes": { "type": "integer", "minimum": 0, "maximum": 1073741824 }
+      }
+    }
+  }
+}

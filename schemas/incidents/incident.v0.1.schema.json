@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://griefer.dev/schemas/incidents/incident.v0.1.schema.json",
+  "title": "GRIEFER Incident",
+  "description": "Correlated incident produced by the GRIEFER correlation engine. This schema documents the API response shape; it is published so downstream consumers can pin a contract.",
+  "type": "object",
+  "required": [
+    "id",
+    "schema_version",
+    "title",
+    "status",
+    "severity",
+    "risk_score",
+    "confidence",
+    "first_seen",
+    "last_seen"
+  ],
+  "properties": {
+    "id": { "type": "string" },
+    "schema_version": { "type": "string", "enum": ["0.1"] },
+    "title": { "type": "string", "maxLength": 256 },
+    "status": {
+      "type": "string",
+      "enum": ["open", "investigating", "contained", "closed"]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["informational", "low", "medium", "high", "critical"]
+    },
+    "risk_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "first_seen": { "type": "string", "format": "date-time" },
+    "last_seen": { "type": "string", "format": "date-time" },
+    "primary_identity": { "type": "string" },
+    "entities": { "type": "array", "items": { "$ref": "#/$defs/entity_ref" } },
+    "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+    "attack_techniques": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/technique" }
+    },
+    "blast_radius": { "$ref": "#/$defs/blast_radius" },
+    "recommended_actions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/recommended_action" }
+    },
+    "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } }
+  },
+  "$defs": {
+    "entity_ref": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": {
+          "type": "string",
+          "enum": [
+            "identity",
+            "account",
+            "session",
+            "endpoint",
+            "ip_address",
+            "application",
+            "secret",
+            "cloud_resource",
+            "repository",
+            "service"
+          ]
+        },
+        "name": { "type": "string" },
+        "criticality": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "critical"]
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "required": ["id", "rule_id", "title", "category", "severity", "confidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "rule_id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "severity": { "type": "string" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "techniques": { "type": "array", "items": { "$ref": "#/$defs/technique" } },
+        "entity_ids": { "type": "array", "items": { "type": "string" } },
+        "event_ids": { "type": "array", "items": { "type": "string" } },
+        "first_seen": { "type": "string", "format": "date-time" },
+        "last_seen": { "type": "string", "format": "date-time" }
+      }
+    },
+    "technique": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^T[0-9]{4}(\\.[0-9]{3})?$" },
+        "name": { "type": "string" },
+        "tactic": { "type": "string" }
+      }
+    },
+    "blast_radius": {
+      "type": "object",
+      "required": ["score", "max_hops"],
+      "properties": {
+        "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "max_hops": { "type": "integer", "minimum": 0 },
+        "critical_assets": { "type": "integer", "minimum": 0 },
+        "summary": { "type": "string" },
+        "reachable": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "type", "hops"],
+            "properties": {
+              "id": { "type": "string" },
+              "type": { "type": "string" },
+              "name": { "type": "string" },
+              "criticality": { "type": "string" },
+              "hops": { "type": "integer", "minimum": 0 },
+              "via": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "recommended_action": {
+      "type": "object",
+      "required": ["action_type", "reversible", "destructive"],
+      "properties": {
+        "action_type": { "type": "string" },
+        "title": { "type": "string" },
+        "rationale": { "type": "string" },
+        "reversible": { "type": "boolean" },
+        "destructive": { "type": "boolean" },
+        "rollback_action": { "type": "string" },
+        "target_entity_id": { "type": "string" },
+        "targets_critical_asset": { "type": "boolean" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["event_id", "summary"],
+      "properties": {
+        "event_id": { "type": "string" },
+        "occurred_at": { "type": "string", "format": "date-time" },
+        "category": { "type": "string" },
+        "summary": { "type": "string" },
+        "source_name": { "type": "string" }
+      }
+    }
+  }
+}

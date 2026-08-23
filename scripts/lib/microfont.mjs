@@ -12,8 +12,8 @@
  * reason, which is enough to fail a regeneration check.
  *
  * Rectangles have no such ambiguity. Every glyph here is five rows of three
- * cells, emitted as <rect> elements, and the result is the same on any machine
- * with any fonts installed or none at all.
+ * cells, returned as plain rectangles for the caller to fill, and the result is
+ * the same on any machine with any fonts installed or none at all.
  *
  * The set is a-z, 0-9, space, "." and "-": what icon labels use. An unknown
  * character throws rather than rendering as a blank, so a future label that
@@ -78,7 +78,7 @@ export function measure(text, scale = 1) {
 
 /**
  * Rectangles covering the lit cells of `text`, with (x, y) as the top-left
- * corner. Returned in a fixed order so the SVG is byte-stable.
+ * corner. Returned in a fixed order so the output is byte-stable.
  */
 export function textRects(text, { x = 0, y = 0, scale = 1 } = {}) {
   const rects = [];
@@ -92,9 +92,9 @@ export function textRects(text, { x = 0, y = 0, scale = 1 } = {}) {
     }
     const originX = x + index * (GLYPH_WIDTH + 1) * scale;
     for (const [row, cells] of glyph.split("|").entries()) {
-      // Merge horizontally adjacent lit cells into one rect. Three cells is a
-      // small saving per glyph, but it keeps the SVG compact and the output is
-      // identical either way.
+      // Merge horizontally adjacent lit cells into one rect. At three cells
+      // wide the saving is small, but it keeps the rectangle count down and the
+      // pixels are identical either way.
       let run = 0;
       for (let column = 0; column <= GLYPH_WIDTH; column += 1) {
         const lit = cells[column] === "#";
@@ -115,16 +115,4 @@ export function textRects(text, { x = 0, y = 0, scale = 1 } = {}) {
     }
   }
   return rects;
-}
-
-/**
- * `text` as SVG <rect> markup. Pure geometry — no font is referenced, so this
- * renders identically everywhere.
- */
-export function textSvg(text, { x = 0, y = 0, scale = 1, fill = "#000", anchor = "start" } = {}) {
-  const width = measure(text, scale);
-  const originX = anchor === "middle" ? x - width / 2 : anchor === "end" ? x - width : x;
-  return textRects(text, { x: originX, y, scale })
-    .map((r) => `<rect x="${r.x}" y="${r.y}" width="${r.width}" height="${r.height}" fill="${fill}"/>`)
-    .join("");
 }

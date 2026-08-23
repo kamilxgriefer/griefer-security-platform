@@ -19,7 +19,7 @@ import sharp from "sharp";
 
 import { encodeIco } from "./lib/ico.mjs";
 import { ICNS_TYPES, encodeIcns } from "./lib/icns.mjs";
-import { textSvg } from "./lib/microfont.mjs";
+import { measure, textRects } from "./lib/microfont.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const VECTOR = join(ROOT, "branding", "vector");
@@ -403,51 +403,89 @@ async function contactSheet() {
   const CELL = 200;
   const PAD = 16;
   const COLS = 4;
+  const LABEL_SCALE = 2;
+  const INNER = CELL - 32;
   const rows = Math.ceil(cells.length / COLS);
   const width = COLS * CELL + (COLS + 1) * PAD;
   const height = rows * (CELL + 28) + (rows + 1) * PAD;
 
-  const composites = [];
-  for (const [index, [, png]] of cells.entries()) {
-    const col = index % COLS;
-    const row = Math.floor(index / COLS);
-    const resized = await sharp(png)
-      .resize(CELL - 32, CELL - 32, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 }, kernel: "nearest" })
-      .png()
-      .toBuffer();
-    composites.push({
-      input: resized,
-      left: PAD + col * (CELL + PAD) + 16,
-      top: PAD + row * (CELL + 28 + PAD) + 16,
-    });
+  // The sheet is composed here, over a raw buffer, rather than by libvips.
+  //
+  // Every other asset in this pipeline reproduces byte-for-byte on any
+  // machine, but this one did not: regenerated on x86-64 it came out 39 bytes
+  // away from the same commit built on arm64. The icons were unaffected, so
+  // neither the resampler nor the PNG encoder is at fault — it is this file's
+  // nine-layer alpha composite, where libvips takes a different vectorised
+  // path per architecture and lands a handful of pixels one value apart.
+  //
+  // Scaling and blending in integer arithmetic removes the question. The only
+  // libvips work left is decoding the cell PNGs and encoding the result, both
+  // of which the other 101 files show to be stable across architectures.
+  const surface = hexToRgb(BRAND.surface);
+  const canvas = Buffer.alloc(width * height * 3);
+  for (let offset = 0; offset < canvas.length; offset += 3) {
+    canvas[offset] = surface.r;
+    canvas[offset + 1] = surface.g;
+    canvas[offset + 2] = surface.b;
   }
 
-  // Labels are drawn from the micro-font rather than an SVG <text> element.
-  // "monospace" resolves to a different face on every host, which changes the
-  // pixels and therefore the file — see scripts/lib/microfont.mjs.
-  const LABEL_SCALE = 2;
-  const labels = cells
-    .map(([label], index) => {
-      const col = index % COLS;
-      const row = Math.floor(index / COLS);
-      const x = PAD + col * (CELL + PAD) + CELL / 2;
-      const y = PAD + row * (CELL + 28 + PAD) + CELL + 10;
-      return textSvg(label, { x, y, scale: LABEL_SCALE, fill: "#9AA6B8", anchor: "middle" });
-    })
-    .join("");
+  /** Source over destination, rounded half-up. */
+  const blend = (x, y, r, g, b, a) => {
+    if (a === 0 || x < 0 || y < 0 || x >= width || y >= height) return;
+    const at = (y * width + x) * 3;
+    if (a === 255) {
+      canvas[at] = r;
+      canvas[at + 1] = g;
+      canvas[at + 2] = b;
+      return;
+    }
+    // Math.floor is what writing to a Buffer would do anyway; spelling it out
+    // keeps this visibly integer arithmetic rather than an implicit truncation.
+    canvas[at] = Math.floor((r * a + canvas[at] * (255 - a) + 127) / 255);
+    canvas[at + 1] = Math.floor((g * a + canvas[at + 1] * (255 - a) + 127) / 255);
+    canvas[at + 2] = Math.floor((b * a + canvas[at + 2] * (255 - a) + 127) / 255);
+  };
 
-  composites.push({
-    input: Buffer.from(
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${labels}</svg>`,
-    ),
-    left: 0,
-    top: 0,
-  });
+  for (const [index, [, png]] of cells.entries()) {
+    const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const col = index % COLS;
+    const row = Math.floor(index / COLS);
+    const left = PAD + col * (CELL + PAD) + 16;
+    const top = PAD + row * (CELL + 28 + PAD) + 16;
 
-  const sheet = await sharp({
-    create: { width, height, channels: 4, background: { ...hexToRgb(BRAND.surface), alpha: 1 } },
-  })
-    .composite(composites)
+    // Nearest neighbour, deliberately: the point of the sheet is to show what
+    // a 16px icon actually contains, and a smooth upscale would hide it.
+    for (let y = 0; y < INNER; y += 1) {
+      const sourceY = Math.floor((y * info.height) / INNER);
+      for (let x = 0; x < INNER; x += 1) {
+        const sourceX = Math.floor((x * info.width) / INNER);
+        const at = (sourceY * info.width + sourceX) * 4;
+        blend(left + x, top + y, data[at], data[at + 1], data[at + 2], data[at + 3]);
+      }
+    }
+  }
+
+  // Labels come from the micro-font. An SVG <text font-family="monospace">
+  // resolves to a different face on every host — see scripts/lib/microfont.mjs.
+  const ink = hexToRgb("#9AA6B8");
+  for (const [index, [label]] of cells.entries()) {
+    const col = index % COLS;
+    const row = Math.floor(index / COLS);
+    const rects = textRects(label, {
+      x: PAD + col * (CELL + PAD) + CELL / 2 - measure(label, LABEL_SCALE) / 2,
+      y: PAD + row * (CELL + 28 + PAD) + CELL + 10,
+      scale: LABEL_SCALE,
+    });
+    for (const rect of rects) {
+      for (let y = 0; y < rect.height; y += 1) {
+        for (let x = 0; x < rect.width; x += 1) {
+          blend(rect.x + x, rect.y + y, ink.r, ink.g, ink.b, 255);
+        }
+      }
+    }
+  }
+
+  const sheet = await sharp(canvas, { raw: { width, height, channels: 3 } })
     .png({ compressionLevel: 9 })
     .toBuffer();
 

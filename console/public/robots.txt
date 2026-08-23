@@ -1,0 +1,5 @@
+# The GRIEFER Console renders operational security data. It must never be
+# indexed, and it should never be reachable from a network where a crawler
+# could find it in the first place.
+User-agent: *
+Disallow: /

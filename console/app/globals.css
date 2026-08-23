@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+/*
+ * GRIEFER Console design tokens.
+ *
+ * The console is dark by default and only dark. A SOC display is usually a wall
+ * screen in a dim room, and a light theme that nobody uses is a theme nobody
+ * tests.
+ */
+@theme {
+  --color-surface-base: #08090c;
+  --color-surface-raised: #101319;
+  --color-surface-overlay: #161a22;
+  --color-surface-border: #232936;
+  --color-surface-border-strong: #333c4d;
+
+  --color-text-primary: #e7ecf3;
+  --color-text-secondary: #9aa6b8;
+  --color-text-muted: #6b7688;
+
+  --color-brand: #38d9c8;
+  --color-brand-dim: #17726a;
+
+  --color-sev-critical: #ff5f57;
+  --color-sev-high: #ff9f43;
+  --color-sev-medium: #ffd166;
+  --color-sev-low: #6bb3f0;
+  --color-sev-info: #8b94a5;
+
+  --color-ok: #4ade80;
+  --color-warn: #fbbf24;
+  --color-bad: #f87171;
+
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+}
+
+body {
+  background-color: var(--color-surface-base);
+  color: var(--color-text-primary);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100dvh;
+}
+
+/* A visible focus ring is an accessibility requirement, and in a console where
+   a keyboard-driven analyst is the norm it is also a usability one. */
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

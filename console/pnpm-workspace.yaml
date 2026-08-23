@@ -1,0 +1,11 @@
+# Build scripts are opt-in.
+#
+# A postinstall script runs with full user privileges at install time, which
+# makes it the shortest path from a compromised dependency to a compromised
+# developer machine. Each entry below is an explicit decision.
+#
+# unrs-resolver ships an optional native binding used by the ESLint import
+# resolver. Its JavaScript fallback works, lint passes without it, and refusing
+# the build keeps one fewer native postinstall in the supply chain.
+allowBuilds:
+  unrs-resolver: false

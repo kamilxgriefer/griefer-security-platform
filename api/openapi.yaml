@@ -1,0 +1,913 @@
+openapi: 3.0.3
+
+info:
+  title: GRIEFER API
+  version: 0.1.0
+  description: |
+    **Graph-based Resilient Intelligence Engine for Enforcement & Response.**
+
+    GRIEFER ingests security telemetry, correlates weak signals into incidents,
+    estimates blast radius from a Security Graph, and runs every proposed
+    response action through a Policy Kernel before anything may happen.
+
+    ## Status
+
+    v0.1 is a research and engineering prototype. **Response actions are
+    simulated.** GRIEFER contacts no identity provider, no endpoint agent and no
+    cloud platform. `POST /api/v1/actions/evaluate` produces a policy decision
+    and a description of what an action *would* do; nothing outside GRIEFER
+    changes.
+
+    ## Authentication
+
+    v0.1 has **no authentication**. The API defaults to binding `127.0.0.1` and
+    refuses a non-loopback bind unless `GRIEFER_ALLOW_PUBLIC_BIND=true` is set
+    explicitly. Authentication and RBAC are milestone M8; see `docs/ROADMAP.md`.
+    Do not expose this API to a network.
+
+    ## Errors
+
+    Every error uses the same envelope. Messages are safe to display: they never
+    carry a stack trace, an internal path or a driver error. Correlate a failure
+    with server logs using the `request_id`, which is also returned in the
+    `X-Request-Id` header.
+
+    ## Limits
+
+    * Request bodies are capped (`GRIEFER_MAX_REQUEST_BYTES`, default 1 MiB).
+    * Batches are capped independently (`GRIEFER_MAX_BATCH_EVENTS`, default 500).
+    * Write endpoints are rate limited per client address. Read endpoints are
+      not: an analyst refreshing a console during an incident must never be
+      throttled out of the investigation.
+    * List endpoints are paginated and clamp `limit` to 200.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+  contact:
+    name: GRIEFER project
+    url: https://github.com/kamilxgriefer/griefer-security-platform
+
+servers:
+  - url: http://localhost:8080
+    description: Local development stack
+
+tags:
+  - name: Operations
+    description: Liveness, readiness and metrics.
+  - name: Events
+    description: Telemetry ingestion.
+  - name: Incidents
+    description: Correlated incidents.
+  - name: Entities
+    description: Security Graph lookups.
+  - name: Response
+    description: Policy-governed response actions. Simulation only in v0.1.
+  - name: Audit
+    description: The append-only decision trail.
+
+paths:
+  /health:
+    get:
+      tags: [Operations]
+      summary: Liveness probe
+      description: |
+        Reports that the process is running and answering. Deliberately checks
+        no dependency: a liveness probe that fails on a database blip causes
+        restart storms.
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, version, time]
+                properties:
+                  status: { type: string, example: ok }
+                  version: { type: string, example: 0.1.0 }
+                  time: { type: string, format: date-time }
+
+  /ready:
+    get:
+      tags: [Operations]
+      summary: Readiness probe
+      description: |
+        Reports each dependency's state. Returns 503 when a *required*
+        dependency is unusable. The event bus is not required: ingestion
+        continues without fan-out, because telemetry capture must survive a bus
+        outage.
+      responses:
+        "200":
+          description: Every required dependency is healthy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+        "503":
+          description: A required dependency is unusable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+
+  /metrics:
+    get:
+      tags: [Operations]
+      summary: Prometheus metrics
+      responses:
+        "200":
+          description: Metrics in Prometheus text exposition format.
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /api/v1/system/status:
+    get:
+      tags: [Operations]
+      summary: Readiness plus pipeline counters
+      description: Extends `/ready` with the counters the console dashboard renders.
+      responses:
+        "200":
+          description: Current platform status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SystemStatus" }
+
+  /api/v1/events:
+    post:
+      tags: [Events]
+      summary: Ingest one security event
+      description: |
+        Validates the event against the published JSON Schema, normalizes it,
+        stores it, projects it into the Security Graph, publishes it, and offers
+        it to the correlation engine — **in that order**.
+
+        Storage happens before any analysis. If correlation or the event bus is
+        degraded the event is still accepted and persisted, and the response
+        names the degraded subsystem in `degraded`. An attacker who can break
+        the reasoning path must not thereby stop GRIEFER from recording what
+        they did.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SecurityEvent" }
+      responses:
+        "202":
+          description: The event was accepted and durably stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IngestResult" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+    get:
+      tags: [Events]
+      summary: List recently ingested events
+      description: Newest first. Backs the console's live event feed.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of normalized events.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/SecurityEvent" }
+
+  /api/v1/events/batch:
+    post:
+      tags: [Events]
+      summary: Ingest a batch of events
+      description: |
+        Each event is processed independently through the same pipeline. The
+        status code reflects the batch as a whole: `202` when every event was
+        accepted, `207` on partial success, `400` when none were.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [events]
+              properties:
+                events:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items: { $ref: "#/components/schemas/SecurityEvent" }
+      responses:
+        "202":
+          description: Every event was accepted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchResponse" }
+        "207":
+          description: Some events were accepted and some rejected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchResponse" }
+        "400":
+          description: No event in the batch was accepted, or the envelope was malformed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchResponse" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/incidents:
+    get:
+      tags: [Incidents]
+      summary: List incidents
+      description: Most recently active first.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, investigating, contained, closed]
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [informational, low, medium, high, critical]
+        - name: min_risk_score
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 100 }
+      responses:
+        "200":
+          description: A page of incidents.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/Incident" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+
+  /api/v1/incidents/{id}:
+    get:
+      tags: [Incidents]
+      summary: Get one incident
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The incident, with findings, entities, blast radius and recommended actions.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Incident" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/entities/{id}:
+    get:
+      tags: [Entities]
+      summary: Get a Security Graph entity with its immediate context
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Canonical entity id, for example `identity:u-1042`.
+          schema: { type: string }
+          example: "identity:u-1042"
+      responses:
+        "200":
+          description: The entity, its edges, and a blast-radius estimate seeded from it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EntityResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/actions/evaluate:
+    post:
+      tags: [Response]
+      summary: Ask the Policy Kernel to judge a proposed response action
+      description: |
+        Note what the request **cannot** contain: whether the action is
+        destructive, whether it is reversible, or what would roll it back. Those
+        are resolved server-side from GRIEFER's action catalog. A caller that
+        could assert them could talk the Policy Kernel into anything.
+
+        The response always carries a decision. A `deny` produced because the
+        Policy Kernel was unreachable is still a `200` — the evaluation reached
+        a definitive answer, and that answer is no — but it sets
+        `policy_decision.fail_closed` and the `X-Griefer-Policy-Degraded`
+        response header.
+
+        In v0.1 an `allow` in `simulate` mode produces a `simulated_effect`
+        describing what would have happened. Nothing outside GRIEFER changes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EvaluateRequest" }
+      responses:
+        "200":
+          description: The Policy Kernel reached a decision. Check `status` and `policy_decision.effect`.
+          headers:
+            X-Griefer-Policy-Degraded:
+              description: Present and `true` when the decision came from the fail-closed path.
+              schema: { type: string, enum: ["true"] }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResponseAction" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/actions:
+    get:
+      tags: [Response]
+      summary: List evaluated response actions
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - name: incident_id
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: A page of response actions.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/ResponseAction" }
+
+  /api/v1/actions/{id}:
+    get:
+      tags: [Response]
+      summary: Get one response action and its policy decision
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The response action.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResponseAction" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/audit:
+    get:
+      tags: [Audit]
+      summary: Read the audit trail
+      description: |
+        Oldest first, so the trail reads as a narrative. The trail is
+        append-only: there is no endpoint that updates or deletes an entry, and
+        the database refuses both.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of audit entries.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AuditEntry" }
+
+components:
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: Page size. Clamped to 200; an out-of-range value is clamped rather than rejected.
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Offset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+
+  responses:
+    ValidationFailed:
+      description: The request was rejected at the trust boundary.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    NotFound:
+      description: No such resource.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    PayloadTooLarge:
+      description: The body or the batch exceeded its limit.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    UnsupportedMediaType:
+      description: The body was not `application/json`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    RateLimited:
+      description: Too many write requests from this client address.
+      headers:
+        Retry-After:
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    InternalError:
+      description: The request could not be completed. Report the `request_id`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - validation_failed
+                - malformed_request
+                - not_found
+                - payload_too_large
+                - rate_limited
+                - unsupported_media_type
+                - method_not_allowed
+                - internal_error
+                - dependency_degraded
+                - not_implemented
+            message:
+              type: string
+              description: Safe to display. Never contains a stack trace or an internal path.
+            request_id: { type: string }
+            details:
+              description: Structured detail, for example per-field schema violations.
+
+    Page:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items: { type: array, items: {} }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+
+    SecurityEvent:
+      description: |
+        See `schemas/events/security-event.v0.1.schema.json` for the normative
+        definition. That JSON Schema — not this document — is what the API
+        enforces.
+      type: object
+      required: [schema_version, timestamp, source_type, source_name, event_type, category, severity]
+      properties:
+        id: { type: string }
+        schema_version: { type: string, enum: ["0.1"] }
+        timestamp:
+          type: string
+          format: date-time
+          description: When the event occurred at the source. Must carry a timezone; normalized to UTC.
+        source_type:
+          type: string
+          enum: [identity_provider, endpoint_agent, cloud_audit, application, network, secret_manager, source_control, synthetic_fixture]
+        source_name: { type: string }
+        event_type: { type: string, pattern: "^[a-z0-9_]+$" }
+        category:
+          type: string
+          enum: [authentication, session_anomaly, privilege_escalation, credential_access, cloud_access, data_access, process_execution, network_activity, configuration_change]
+        severity:
+          type: string
+          enum: [informational, low, medium, high, critical]
+        actor:
+          type: object
+          required: [type, id]
+          properties:
+            type: { type: string, enum: [identity, account, service, application, unknown] }
+            id: { type: string }
+            name: { type: string }
+            domain: { type: string }
+            session_id: { type: string }
+            privileged: { type: boolean }
+        target:
+          type: object
+          required: [type, id]
+          properties:
+            type: { $ref: "#/components/schemas/EntityType" }
+            id: { type: string }
+            name: { type: string }
+            criticality: { $ref: "#/components/schemas/Criticality" }
+        device:
+          type: object
+          properties:
+            id: { type: string }
+            hostname: { type: string }
+            os: { type: string }
+            managed: { type: boolean }
+            compliant: { type: boolean }
+        network:
+          type: object
+          properties:
+            source_ip: { type: string }
+            destination_ip: { type: string }
+            asn: { type: string }
+            country: { type: string }
+            first_seen_for_actor: { type: boolean }
+        cloud:
+          type: object
+          properties:
+            provider: { type: string, enum: [aws, azure, gcp, other] }
+            account_id: { type: string }
+            region: { type: string }
+            resource_id: { type: string }
+            resource_type: { type: string }
+        raw_reference:
+          type: object
+          description: A pointer to the original payload. GRIEFER does not accept unbounded raw payloads inline.
+          required: [uri]
+          properties:
+            uri: { type: string }
+            digest: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
+            size_bytes: { type: integer }
+        labels:
+          type: object
+          maxProperties: 32
+          additionalProperties: { type: string }
+          description: |
+            Bounded annotations. Labels are DATA. Keys naming a GRIEFER
+            control-plane concept (`action`, `command`, `policy`, anything under
+            `griefer.`) are stripped at ingest and reported in
+            `quarantined_labels`.
+        correlation_id: { type: string }
+
+    IngestResult:
+      type: object
+      required: [event_id]
+      properties:
+        event_id: { type: string }
+        incident_id:
+          type: string
+          description: Present when the event contributed to an incident.
+        risk_score: { type: integer, minimum: 0, maximum: 100 }
+        quarantined_labels:
+          type: array
+          items: { type: string }
+          description: Control-plane label keys stripped from the event.
+        degraded:
+          type: array
+          items: { type: string, enum: [correlation, event_bus] }
+          description: Subsystems that failed while handling this event. The event was still accepted and stored.
+
+    BatchResponse:
+      type: object
+      required: [accepted, rejected, results]
+      properties:
+        accepted: { type: integer }
+        rejected: { type: integer }
+        results:
+          type: array
+          items:
+            type: object
+            required: [index, status]
+            properties:
+              index: { type: integer }
+              status: { type: string, enum: [accepted, rejected] }
+              result: { $ref: "#/components/schemas/IngestResult" }
+              error:
+                type: object
+                properties:
+                  code: { type: string }
+                  message: { type: string }
+                  request_id: { type: string }
+                  details: {}
+
+    EntityType:
+      type: string
+      enum: [identity, account, session, endpoint, ip_address, application, secret, cloud_resource, repository, service]
+
+    Criticality:
+      type: string
+      enum: [low, medium, high, critical]
+
+    Technique:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, pattern: "^T[0-9]{4}(\\.[0-9]{3})?$" }
+        name: { type: string }
+        tactic: { type: string }
+
+    Finding:
+      type: object
+      required: [id, rule_id, title, category, severity, confidence]
+      properties:
+        id: { type: string }
+        rule_id: { type: string, example: GRF-CORR-0001 }
+        title: { type: string }
+        description: { type: string }
+        category: { type: string }
+        severity: { type: string }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        techniques: { type: array, items: { $ref: "#/components/schemas/Technique" } }
+        entity_ids: { type: array, items: { type: string } }
+        event_ids: { type: array, items: { type: string } }
+        first_seen: { type: string, format: date-time }
+        last_seen: { type: string, format: date-time }
+
+    BlastRadius:
+      type: object
+      required: [score, max_hops]
+      properties:
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Saturating estimate of criticality-weighted reachability, discounted by distance.
+        max_hops: { type: integer }
+        critical_assets: { type: integer }
+        summary: { type: string }
+        reachable:
+          type: array
+          items:
+            type: object
+            required: [id, type, hops]
+            properties:
+              id: { type: string }
+              type: { $ref: "#/components/schemas/EntityType" }
+              name: { type: string }
+              criticality: { $ref: "#/components/schemas/Criticality" }
+              hops: { type: integer }
+              via: { type: string }
+
+    RecommendedAction:
+      type: object
+      required: [action_type, reversible, destructive]
+      properties:
+        action_type: { type: string }
+        title: { type: string }
+        rationale: { type: string }
+        reversible: { type: boolean }
+        destructive: { type: boolean }
+        rollback_action:
+          type: string
+          description: Empty when no rollback exists, which forces human approval.
+        target_entity_id: { type: string }
+        targets_critical_asset: { type: boolean }
+
+    Incident:
+      type: object
+      required: [id, schema_version, title, status, severity, risk_score, confidence, first_seen, last_seen]
+      properties:
+        id: { type: string }
+        schema_version: { type: string, enum: ["0.1"] }
+        title: { type: string }
+        status: { type: string, enum: [open, investigating, contained, closed] }
+        severity: { type: string, enum: [informational, low, medium, high, critical] }
+        risk_score: { type: integer, minimum: 0, maximum: 100 }
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 0.95
+          description: Capped at 0.95. GRIEFER is never certain, and a displayed 100% invites an analyst to stop thinking.
+        first_seen: { type: string, format: date-time }
+        last_seen: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        primary_identity: { type: string }
+        entities:
+          type: array
+          items:
+            type: object
+            required: [id, type]
+            properties:
+              id: { type: string }
+              type: { $ref: "#/components/schemas/EntityType" }
+              name: { type: string }
+              criticality: { $ref: "#/components/schemas/Criticality" }
+        findings: { type: array, items: { $ref: "#/components/schemas/Finding" } }
+        attack_techniques: { type: array, items: { $ref: "#/components/schemas/Technique" } }
+        blast_radius: { $ref: "#/components/schemas/BlastRadius" }
+        recommended_actions: { type: array, items: { $ref: "#/components/schemas/RecommendedAction" } }
+        evidence:
+          type: array
+          items:
+            type: object
+            required: [event_id, summary]
+            properties:
+              event_id: { type: string }
+              occurred_at: { type: string, format: date-time }
+              category: { type: string }
+              summary: { type: string }
+              source_name: { type: string }
+
+    EntityResponse:
+      type: object
+      required: [entity, edges, blast_radius]
+      properties:
+        entity:
+          type: object
+          required: [id, type, criticality]
+          properties:
+            id: { type: string }
+            type: { $ref: "#/components/schemas/EntityType" }
+            key: { type: string }
+            name: { type: string }
+            criticality: { $ref: "#/components/schemas/Criticality" }
+            attributes: { type: object, additionalProperties: { type: string } }
+            first_seen: { type: string, format: date-time }
+            last_seen: { type: string, format: date-time }
+            observed:
+              type: boolean
+              description: True when the entity was seen in telemetry rather than only declared by the asset inventory.
+        edges:
+          type: array
+          items:
+            type: object
+            required: [from, to, relation]
+            properties:
+              from: { type: string }
+              to: { type: string }
+              relation: { type: string }
+              first_seen: { type: string, format: date-time }
+              last_seen: { type: string, format: date-time }
+              event_ids: { type: array, items: { type: string } }
+        blast_radius: { $ref: "#/components/schemas/BlastRadius" }
+
+    EvaluateRequest:
+      type: object
+      required: [incident_id, action_type]
+      additionalProperties: false
+      properties:
+        incident_id: { type: string }
+        action_type:
+          type: string
+          description: Must name an action in GRIEFER's catalog. An unknown type is rejected with the allowed list.
+          enum:
+            - preserve_evidence
+            - require_mfa
+            - temporarily_suspend_privileges
+            - isolate_endpoint
+            - revoke_sessions
+            - rotate_exposed_secret
+            - delete_identity
+            - wipe_endpoint
+            - purge_audit_records
+        mode:
+          type: string
+          enum: [simulate, execute]
+          default: simulate
+          description: |
+            `execute` is accepted so the policy contract can be exercised, and
+            always resolves to `requires_approval`: v0.1 ships no actuator.
+        requested_by: { type: string }
+        automated:
+          type: boolean
+          default: false
+          description: True when GRIEFER itself initiated the request. Automated requests are held to a higher bar.
+
+    PolicyDecision:
+      type: object
+      required: [effect, allow, reasons]
+      properties:
+        effect: { type: string, enum: [allow, deny, require_approval] }
+        allow: { type: boolean }
+        reasons:
+          type: array
+          minItems: 1
+          items: { type: string }
+          description: Never empty. A decision without a reason is not a decision.
+        policy_package: { type: string, example: griefer.response }
+        policy_version: { type: string, example: 0.1.0 }
+        evaluated_at: { type: string, format: date-time }
+        fail_closed:
+          type: boolean
+          description: True when the decision was produced because the Policy Kernel could not be reached.
+        engine: { type: string, enum: [embedded, remote, unavailable] }
+
+    ResponseAction:
+      type: object
+      required: [id, incident_id, action_type, mode, status]
+      properties:
+        id: { type: string }
+        incident_id: { type: string }
+        action_type: { type: string }
+        mode: { type: string, enum: [simulate, execute] }
+        status:
+          type: string
+          enum: [simulated, requires_approval, denied, rejected]
+          description: |
+            `simulated` means policy allowed it and GRIEFER computed the effect
+            it *would* have had. Nothing outside GRIEFER changed.
+        requested_by: { type: string }
+        policy_decision: { $ref: "#/components/schemas/PolicyDecision" }
+        reason: { type: string }
+        reversible: { type: boolean }
+        destructive: { type: boolean }
+        rollback_action: { type: string }
+        target_entity_id: { type: string }
+        simulated_effect:
+          type: object
+          properties:
+            description: { type: string }
+            affected_entities: { type: array, items: { type: string } }
+            rollback_plan: { type: string }
+        created_at: { type: string, format: date-time }
+        executed_at:
+          type: string
+          format: date-time
+          description: Always absent in v0.1. GRIEFER ships no actuator.
+
+    AuditEntry:
+      type: object
+      required: [id, sequence, timestamp, actor, action, outcome]
+      properties:
+        id: { type: string }
+        sequence: { type: integer, description: Assigned by the store; strictly increasing. }
+        timestamp: { type: string, format: date-time }
+        actor: { type: string, example: "system:griefer" }
+        action:
+          type: string
+          enum:
+            - event.ingested
+            - event.rejected
+            - event.label_quarantined
+            - incident.created
+            - incident.updated
+            - policy.evaluated
+            - response.simulated
+            - response.denied
+            - response.rejected
+            - response.requires_approval
+            - correlation.failed
+            - system.started
+            - system.stopped
+        subject_type: { type: string, enum: [event, incident, action, system] }
+        subject_id: { type: string }
+        outcome: { type: string, enum: [success, denied, failure, pending] }
+        reason: { type: string }
+        request_id: { type: string }
+        details:
+          type: object
+          description: Identifiers, verdicts and counts. Never credential material or raw telemetry.
+
+    ComponentStatus:
+      type: object
+      required: [name, kind, healthy, required]
+      properties:
+        name: { type: string, enum: [storage, policy_kernel, event_bus] }
+        kind: { type: string, example: postgres }
+        healthy: { type: boolean }
+        required: { type: boolean }
+        detail: { type: string }
+
+    Readiness:
+      type: object
+      required: [status, version, time, components, response_mode, simulation_only]
+      properties:
+        status: { type: string, enum: [ready, degraded] }
+        version: { type: string }
+        time: { type: string, format: date-time }
+        components: { type: array, items: { $ref: "#/components/schemas/ComponentStatus" } }
+        response_mode: { type: string, enum: [simulate] }
+        simulation_only:
+          type: boolean
+          description: Always true in v0.1. Surfaced on every status payload so a console cannot display GRIEFER without also displaying it.
+
+    SystemStatus:
+      allOf:
+        - $ref: "#/components/schemas/Readiness"
+        - type: object
+          properties:
+            events_ingested: { type: integer }
+            incidents_open: { type: integer }
+            graph_entities: { type: integer }
+            graph_edges: { type: integer }
+            detection_rules: { type: integer }

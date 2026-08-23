@@ -25,6 +25,19 @@ function baseUrl(): string {
   return process.env.GRIEFER_API_BASE_URL ?? DEFAULT_BASE_URL;
 }
 
+/**
+ * The service credential the API requires on every application endpoint.
+ *
+ * Read here rather than passed in, so no call site can forget it. Both paths
+ * from the console to the API — this client, used by React Server Components,
+ * and the browser-facing gateway in app/api/griefer — must present it; missing
+ * it on either one turns the console into a page of error panels.
+ */
+function authHeaders(): Record<string, string> {
+  const token = process.env.INTERNAL_API_TOKEN;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 /** ApiError carries enough context for the UI to explain a failure honestly. */
 export class ApiError extends Error {
   readonly status: number;
@@ -53,7 +66,7 @@ async function request<T>(path: string): Promise<T> {
   try {
     response = await fetch(`${baseUrl()}${path}`, {
       signal: controller.signal,
-      headers: { Accept: "application/json" },
+      headers: { Accept: "application/json", ...authHeaders() },
       // Incident data is live operational state. A cached SOC console is a
       // console that shows an analyst yesterday's attack.
       cache: "no-store",
@@ -70,6 +83,14 @@ async function request<T>(path: string): Promise<T> {
 
   if (!response.ok) {
     const requestId = response.headers.get("x-request-id") ?? undefined;
+    if (response.status === 401) {
+      // The console is misconfigured, not the platform. Say so in the log —
+      // an operator staring at "unavailable" panels needs to know the cause is
+      // a missing INTERNAL_API_TOKEN and not a dead API.
+      console.error(
+        "GRIEFER API rejected the console's credential; check INTERNAL_API_TOKEN matches on both services",
+      );
+    }
     let code = "http_error";
     let message = `The GRIEFER API returned ${response.status}.`;
     try {

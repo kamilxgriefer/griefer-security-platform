@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 
+import { authenticate } from "@/lib/accounts";
 import { authConfigured, consoleConfig } from "@/lib/config";
-import { verifyPassword } from "@/lib/password";
 import { blockedFor, recordFailure, recordSuccess } from "@/lib/ratelimit";
 import { clientKey, isSameOrigin } from "@/lib/request";
 import { SESSION_COOKIE, cookieOptions, sign } from "@/lib/session";
@@ -62,19 +62,22 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: REJECTED }, { status: 401 });
   }
 
-  const usernameMatches = username.trim() === config.demoUsername;
-  // The password is verified even when the username is wrong, so that a valid
-  // username cannot be identified by how long the response takes.
-  const passwordMatches = await verifyPassword(password, config.passwordSalt, config.passwordHash);
+  // authenticate performs the same scrypt work whether or not the username
+  // exists, so the response time does not reveal which accounts are real.
+  const identity = await authenticate(username, password, config);
 
-  if (!usernameMatches || !passwordMatches) {
+  if (!identity) {
     recordFailure(key);
     return Response.json({ error: REJECTED }, { status: 401 });
   }
 
   recordSuccess(key);
-  const token = await sign(config.demoUsername, config.sessionSecret);
+  const token = await sign(identity.username, identity.role, config.sessionSecret);
   (await cookies()).set(SESSION_COOKIE, token, cookieOptions(config.secureCookies));
 
-  return Response.json({ ok: true });
+  // The role goes back so the browser can render the right navigation
+  // immediately. It is not what grants access — that is the signed cookie —
+  // and a client that lies to itself about its role still cannot reach an
+  // administrator route, because the middleware reads the cookie, not this.
+  return Response.json({ ok: true, role: identity.role });
 }

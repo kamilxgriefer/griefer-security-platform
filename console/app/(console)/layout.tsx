@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import { Nav } from "@/components/Nav";
 import { SimulationBanner } from "@/components/SimulationBanner";
+import { currentSession } from "@/lib/currentSession";
 
 /**
  * Layout for every page behind the access gate.
@@ -10,7 +11,13 @@ import { SimulationBanner } from "@/components/SimulationBanner";
  * chrome — and the incident data inside it — never reaches an anonymous
  * visitor.
  */
-export default function ConsoleLayout({ children }: { readonly children: ReactNode }) {
+export default async function ConsoleLayout({ children }: { readonly children: ReactNode }) {
+  // middleware.ts has already established that this is a valid session, so the
+  // null branch is unreachable in practice. It is handled rather than asserted
+  // because an unreachable assertion becomes a crashed page the day the
+  // matcher changes.
+  const session = await currentSession();
+
   return (
     <>
       <a
@@ -20,7 +27,7 @@ export default function ConsoleLayout({ children }: { readonly children: ReactNo
         Skip to content
       </a>
       <SimulationBanner />
-      <Nav />
+      <Nav username={session?.username ?? null} role={session?.role ?? null} />
       <main id="main" className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6">
         {children}
       </main>

@@ -166,12 +166,20 @@ services:
       # the API directly and there is no CORS surface to configure.
       GRIEFER_API_BASE_URL: http://api:8080
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN is required}
-      # The access gate. Without all three the console refuses every request
-      # rather than serving incident data — a gate that fails open is worse
-      # than no gate, because it looks protected.
-      DEMO_USERNAME: ${DEMO_USERNAME:-demo-admin}
-      DEMO_PASSWORD_SALT: ${DEMO_PASSWORD_SALT:?DEMO_PASSWORD_SALT is required}
-      DEMO_PASSWORD_HASH: ${DEMO_PASSWORD_HASH:?DEMO_PASSWORD_HASH is required}
+      # The access gate. Without a usable administrator credential the console
+      # refuses every request rather than serving incident data — a gate that
+      # fails open is worse than no gate, because it looks protected.
+      # The administrator is required. A deployment with no administrator has
+      # nobody who can provision the rest, so the stack refuses to start rather
+      # than come up with a console nobody can manage.
+      GRIEFER_ADMIN_USERNAME: ${GRIEFER_ADMIN_USERNAME:-admin}
+      GRIEFER_ADMIN_PASSWORD_SALT: ${GRIEFER_ADMIN_PASSWORD_SALT:?GRIEFER_ADMIN_PASSWORD_SALT is required}
+      GRIEFER_ADMIN_PASSWORD_HASH: ${GRIEFER_ADMIN_PASSWORD_HASH:?GRIEFER_ADMIN_PASSWORD_HASH is required}
+      # The analyst is optional: a deployment may legitimately start with only
+      # an administrator, who then provisions the others.
+      GRIEFER_ANALYST_USERNAME: ${GRIEFER_ANALYST_USERNAME:-analyst}
+      GRIEFER_ANALYST_PASSWORD_SALT: ${GRIEFER_ANALYST_PASSWORD_SALT:-}
+      GRIEFER_ANALYST_PASSWORD_HASH: ${GRIEFER_ANALYST_PASSWORD_HASH:-}
       DEMO_SESSION_SECRET: ${DEMO_SESSION_SECRET:?DEMO_SESSION_SECRET is required}
     ports:
       - "127.0.0.1:3000:3000"

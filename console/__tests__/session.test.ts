@@ -6,25 +6,26 @@ const SECRET = "a-session-secret-long-enough-to-be-real-0123456789";
 
 describe("session tokens", () => {
   it("round-trips a valid session", async () => {
-    const token = await sign("demo-admin", SECRET);
+    const token = await sign("demo-admin", "admin", SECRET);
     const payload = await verify(token, SECRET);
 
     expect(payload).not.toBeNull();
     expect(payload?.sub).toBe("demo-admin");
+    expect(payload?.role).toBe("admin");
     expect(payload!.exp - payload!.iat).toBe(SESSION_TTL_SECONDS);
   });
 
   it("rejects a token signed with a different secret", async () => {
-    const token = await sign("demo-admin", SECRET);
+    const token = await sign("demo-admin", "admin", SECRET);
     expect(await verify(token, "a-completely-different-secret-value")).toBeNull();
   });
 
   it("rejects a tampered payload", async () => {
-    const token = await sign("demo-admin", SECRET);
+    const token = await sign("demo-admin", "admin", SECRET);
     const [body, signature] = token.split(".");
     // Re-encode the payload claiming a different subject, keeping the signature.
     const forged = Buffer.from(
-      JSON.stringify({ sub: "root", iat: 0, exp: 9_999_999_999 }),
+      JSON.stringify({ sub: "root", role: "admin", iat: 0, exp: 9_999_999_999 }),
     ).toString("base64url");
 
     expect(await verify(`${forged}.${signature}`, SECRET)).toBeNull();
@@ -33,7 +34,7 @@ describe("session tokens", () => {
 
   it("rejects an expired token", async () => {
     const issued = Date.now();
-    const token = await sign("demo-admin", SECRET, issued);
+    const token = await sign("demo-admin", "admin", SECRET, issued);
 
     // One millisecond past expiry.
     const past = issued + SESSION_TTL_SECONDS * 1000 + 1;
@@ -50,7 +51,7 @@ describe("session tokens", () => {
 
   it("rejects everything when no secret is configured", async () => {
     // A gate that cannot verify must refuse, not admit.
-    const token = await sign("demo-admin", SECRET);
+    const token = await sign("demo-admin", "admin", SECRET);
     expect(await verify(token, "")).toBeNull();
   });
 
@@ -64,5 +65,31 @@ describe("session tokens", () => {
     // Secure is dropped only for plain-HTTP localhost, where a browser would
     // silently discard the cookie and login would appear to fail.
     expect(cookieOptions(false).secure).toBe(false);
+  });
+
+  it("carries the role it was signed with, not a default", async () => {
+    const analyst = await verify(await sign("nadia", "analyst", SECRET), SECRET);
+    expect(analyst?.role).toBe("analyst");
+
+    const admin = await verify(await sign("nadia", "admin", SECRET), SECRET);
+    expect(admin?.role).toBe("admin");
+  });
+
+  it("rejects a validly signed token whose role is missing or unknown", async () => {
+    // Signed with the real secret, so the signature checks out. This is the
+    // shape a token from before roles existed would have, and the shape an
+    // attacker would aim for if the role were merely defaulted rather than
+    // required.
+    const { createHmac } = await import("node:crypto");
+    for (const payload of [
+      { sub: "nadia", iat: 0, exp: 9_999_999_999 },
+      { sub: "nadia", role: "root", iat: 0, exp: 9_999_999_999 },
+      { sub: "nadia", role: "", iat: 0, exp: 9_999_999_999 },
+      { sub: "nadia", role: 1, iat: 0, exp: 9_999_999_999 },
+    ]) {
+      const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+      const signature = createHmac("sha256", SECRET).update(body).digest("base64url");
+      expect(await verify(`${body}.${signature}`, SECRET)).toBeNull();
+    }
   });
 });

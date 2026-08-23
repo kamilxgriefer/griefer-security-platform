@@ -3,7 +3,9 @@ import type { Metadata } from "next";
 import { LoginForm } from "@/components/LoginForm";
 
 export const metadata: Metadata = {
-  title: "Sign in — GRIEFER",
+  // The root layout appends " — GRIEFER"; repeating it here produced
+  // "Sign in — GRIEFER — GRIEFER" in the tab.
+  title: "Sign in",
   robots: { index: false, follow: false },
 };
 

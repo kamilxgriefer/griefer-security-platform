@@ -4,10 +4,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 
+import { mayAccess, roleLabel, type Role } from "@/lib/roles";
+
 const LINKS = [
   { href: "/", label: "Dashboard" },
   { href: "/incidents", label: "Incidents" },
   { href: "/audit", label: "Audit trail" },
+  { href: "/admin/users", label: "Accounts" },
 ] as const;
 
 function isActive(pathname: string, href: string): boolean {
@@ -22,9 +25,20 @@ function isActive(pathname: string, href: string): boolean {
  * behind a disclosure button, because a SOC console is read on a phone during a
  * callout at least as often as at a desk.
  */
-export function Nav() {
+export function Nav({
+  username,
+  role,
+}: {
+  readonly username: string | null;
+  readonly role: Role | null;
+}) {
   const pathname = usePathname() ?? "/";
   const [open, setOpen] = useState(false);
+
+  // The same rules the middleware enforces, reused rather than restated. A
+  // second hand-written list of administrator paths would be one edit away
+  // from showing a link that answers "forbidden".
+  const links = role ? LINKS.filter((link) => mayAccess(role, link.href)) : [];
 
   return (
     <nav
@@ -42,7 +56,7 @@ export function Nav() {
         </Link>
 
         <ul className="hidden items-center gap-1 sm:flex">
-          {LINKS.map((link) => (
+          {links.map((link) => (
             <li key={link.href}>
               <Link
                 href={link.href}
@@ -57,7 +71,8 @@ export function Nav() {
               </Link>
             </li>
           ))}
-          <li className="ml-2 border-l border-[var(--color-surface-border)] pl-2">
+          <li className="ml-2 flex items-center gap-3 border-l border-[var(--color-surface-border)] pl-3">
+            {username && role && <Identity username={username} role={role} />}
             <SignOutButton />
           </li>
         </ul>
@@ -79,7 +94,7 @@ export function Nav() {
           id="primary-navigation-mobile"
           className="border-t border-[var(--color-surface-border)] px-4 pb-3 sm:hidden"
         >
-          {LINKS.map((link) => (
+          {links.map((link) => (
             <li key={link.href}>
               <Link
                 href={link.href}
@@ -95,12 +110,37 @@ export function Nav() {
               </Link>
             </li>
           ))}
-          <li className="pt-3">
+          <li className="flex items-center justify-between gap-3 pt-3">
+            {username && role && <Identity username={username} role={role} />}
             <SignOutButton />
           </li>
         </ul>
       )}
     </nav>
+  );
+}
+
+/**
+ * Who is signed in, and as what.
+ *
+ * The role is shown rather than left to be inferred from which links happen to
+ * be present. Someone who cannot see the audit trail should be able to tell at
+ * a glance that this is their role, not an outage.
+ */
+function Identity({ username, role }: { readonly username: string; readonly role: Role }) {
+  return (
+    <span className="flex items-baseline gap-1.5 text-[12px] leading-none">
+      <span className="text-[var(--color-text-secondary)]">{username}</span>
+      <span
+        className={`rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider ${
+          role === "admin"
+            ? "bg-[var(--color-brand-dim)] text-[var(--color-brand-bright)]"
+            : "bg-[var(--color-surface-overlay)] text-[var(--color-text-muted)]"
+        }`}
+      >
+        {roleLabel(role)}
+      </span>
+    </span>
   );
 }
 

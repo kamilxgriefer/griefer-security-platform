@@ -13,9 +13,12 @@ export interface ConsoleConfig {
   apiBaseUrl: string;
   internalApiToken: string;
   sessionSecret: string;
-  passwordHash: string;
-  passwordSalt: string;
-  demoUsername: string;
+  adminUsername: string;
+  adminPasswordSalt: string;
+  adminPasswordHash: string;
+  analystUsername: string;
+  analystPasswordSalt: string;
+  analystPasswordHash: string;
   /** secureCookies is false only on plain-HTTP localhost. */
   secureCookies: boolean;
   appEnv: string;
@@ -26,9 +29,12 @@ export function consoleConfig(): ConsoleConfig {
     apiBaseUrl: process.env.GRIEFER_API_BASE_URL ?? "http://127.0.0.1:8080",
     internalApiToken: process.env.INTERNAL_API_TOKEN ?? "",
     sessionSecret: process.env.DEMO_SESSION_SECRET ?? "",
-    passwordHash: process.env.DEMO_PASSWORD_HASH ?? "",
-    passwordSalt: process.env.DEMO_PASSWORD_SALT ?? "",
-    demoUsername: process.env.DEMO_USERNAME ?? "demo-admin",
+    adminUsername: process.env.GRIEFER_ADMIN_USERNAME ?? "admin",
+    adminPasswordSalt: process.env.GRIEFER_ADMIN_PASSWORD_SALT ?? "",
+    adminPasswordHash: process.env.GRIEFER_ADMIN_PASSWORD_HASH ?? "",
+    analystUsername: process.env.GRIEFER_ANALYST_USERNAME ?? "analyst",
+    analystPasswordSalt: process.env.GRIEFER_ANALYST_PASSWORD_SALT ?? "",
+    analystPasswordHash: process.env.GRIEFER_ANALYST_PASSWORD_HASH ?? "",
     // Cookies are Secure everywhere except plain-HTTP local development, where
     // a browser silently drops a Secure cookie and login appears to fail for no
     // visible reason.
@@ -45,9 +51,13 @@ export function consoleConfig(): ConsoleConfig {
  * looks protected.
  */
 export function authConfigured(config: ConsoleConfig = consoleConfig()): boolean {
-  return (
-    config.sessionSecret.length >= 32 &&
-    config.passwordHash.length > 0 &&
-    config.passwordSalt.length > 0
-  );
+  if (config.sessionSecret.length < 32) return false;
+  // At least one account must be usable, and it must be the administrator.
+  // A deployment with only an analyst configured has nobody who can provision
+  // the rest, which is a locked door with the key inside.
+  const adminUsable =
+    config.adminUsername.length > 0 &&
+    config.adminPasswordSalt.length > 0 &&
+    config.adminPasswordHash.length > 0;
+  return adminUsable;
 }

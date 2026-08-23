@@ -63,6 +63,25 @@ func TestNATSPublisherValidatesOptions(t *testing.T) {
 	}
 }
 
+func TestNATSCredentialsAreRejectedWhenWrong(t *testing.T) {
+	url := os.Getenv("GRIEFER_TEST_NATS_URL")
+	if url == "" || os.Getenv("GRIEFER_TEST_NATS_USER") == "" {
+		t.Skip("set GRIEFER_TEST_NATS_URL and GRIEFER_TEST_NATS_USER to run this test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	// A server that requires credentials must refuse the wrong ones. Without
+	// this the auth configuration could be silently ineffective.
+	if _, err := bus.NewNATSPublisher(ctx, bus.NATSOptions{
+		URL: url, Stream: "GRIEFER_TEST", Subject: "griefer.test.events",
+		ConnectTimeout: 5 * time.Second,
+		User:           "wrong-user", Password: "wrong-password",
+	}); err == nil {
+		t.Fatal("NewNATSPublisher() connected with the wrong credentials")
+	}
+}
+
 func TestNATSPublisherAgainstARealServer(t *testing.T) {
 	url := os.Getenv("GRIEFER_TEST_NATS_URL")
 	if url == "" {
@@ -74,6 +93,7 @@ func TestNATSPublisherAgainstARealServer(t *testing.T) {
 	p, err := bus.NewNATSPublisher(ctx, bus.NATSOptions{
 		URL: url, Stream: "GRIEFER_TEST", Subject: "griefer.test.events",
 		ConnectTimeout: 5 * time.Second, MaxAge: time.Hour,
+		User: os.Getenv("GRIEFER_TEST_NATS_USER"), Password: os.Getenv("GRIEFER_TEST_NATS_PASSWORD"),
 	})
 	if err != nil {
 		t.Fatalf("NewNATSPublisher() error = %v", err)

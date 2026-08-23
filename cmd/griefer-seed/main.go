@@ -35,19 +35,21 @@ func main() {
 		scenario = flag.String("scenario", fixtures.ScenarioOne, "embedded scenario path to replay")
 		pause    = flag.Duration("pause", 0, "delay between events, to watch risk accumulate in the console")
 		wait     = flag.Duration("wait-for-api", 30*time.Second, "how long to wait for the API to become ready")
+		once     = flag.Bool("once", false,
+			"do nothing if the API already holds an incident. Makes the seed idempotent, so a container restart does not stack duplicate incidents.")
 	)
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, *apiURL, *scenario, *pause, *wait); err != nil {
+	if err := run(ctx, *apiURL, *scenario, *pause, *wait, *once); err != nil {
 		fmt.Fprintf(os.Stderr, "griefer-seed: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, apiURL, scenarioPath string, pause, wait time.Duration) error {
+func run(ctx context.Context, apiURL, scenarioPath string, pause, wait time.Duration, once bool) error {
 	sc, err := demo.LoadScenario(scenarioPath)
 	if err != nil {
 		return err
@@ -64,6 +66,17 @@ func run(ctx context.Context, apiURL, scenarioPath string, pause, wait time.Dura
 
 	if err := waitForReady(ctx, client, apiURL, wait); err != nil {
 		return err
+	}
+
+	if once {
+		seeded, err := alreadySeeded(ctx, client, apiURL)
+		if err != nil {
+			return fmt.Errorf("check whether the scenario is already loaded: %w", err)
+		}
+		if seeded {
+			fmt.Println("An incident already exists; nothing to seed.")
+			return nil
+		}
 	}
 
 	fmt.Printf("Replaying synthetic scenario %q (%d events) against %s\n", sc.ID, len(replay), apiURL)
@@ -103,6 +116,51 @@ func run(ctx context.Context, apiURL, scenarioPath string, pause, wait time.Dura
 	return nil
 }
 
+// alreadySeeded reports whether the API already holds an incident.
+//
+// The check is "is there any incident at all" rather than "is this specific
+// scenario present", because the seed's purpose is to give an empty
+// demonstration environment something to show. Anything already there — a
+// replay, a manual submission — means that job is done, and adding a second
+// identical incident would make the demo look broken.
+func alreadySeeded(ctx context.Context, client *http.Client, apiURL string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL+"/api/v1/incidents?limit=1", nil)
+	if err != nil {
+		return false, fmt.Errorf("build request: %w", err)
+	}
+	authorize(req)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("send request: %w", err)
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponse))
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("API returned %d", resp.StatusCode)
+	}
+	var page struct {
+		Total int `json:"total"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponse)).Decode(&page); err != nil {
+		return false, fmt.Errorf("decode response: %w", err)
+	}
+	return page.Total > 0, nil
+}
+
+// authorize attaches the service credential when one is configured.
+//
+// The seeder speaks to the API over the same authenticated path as the console,
+// rather than through a privileged side door — a seeding tool that can bypass
+// authentication is a backdoor with a friendly name.
+func authorize(req *http.Request) {
+	if token := os.Getenv("INTERNAL_API_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+}
+
 type ingestResult struct {
 	EventID    string   `json:"event_id"`
 	IncidentID string   `json:"incident_id"`
@@ -116,6 +174,7 @@ func postEvent(ctx context.Context, client *http.Client, apiURL string, body []b
 		return ingestResult{}, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	authorize(req)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -150,6 +209,7 @@ func waitForReady(ctx context.Context, client *http.Client, apiURL string, wait 
 		if err != nil {
 			return fmt.Errorf("build readiness request: %w", err)
 		}
+		authorize(req)
 		resp, err := client.Do(req)
 		if err == nil {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponse))

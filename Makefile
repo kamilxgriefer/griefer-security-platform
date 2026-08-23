@@ -15,6 +15,9 @@ API_BIN        := $(BIN_DIR)/griefer-api
 SEED_BIN       := $(BIN_DIR)/griefer-seed
 CONSOLE_DIR    := console
 COMPOSE_FILE   := docker-compose.yml
+# Local secrets live outside git. `make secrets` creates it.
+COMPOSE_ENV    := .env.local
+COMPOSE        := $(DOCKER_COMPOSE) -f $(COMPOSE_FILE) --env-file $(COMPOSE_ENV)
 
 # Ports used by `make services-up` for native (non-Docker) local testing.
 TEST_PG_PORT   ?= 55432
@@ -116,9 +119,33 @@ check: fmt-check vet policy-check test lint-console typecheck test-console ## Ru
 # Local stack (Docker Compose)
 # ---------------------------------------------------------------------------
 
+.PHONY: secrets
+secrets: ## Generate demo credentials and .env.local (never overwrites an existing file)
+	@if [ -f $(COMPOSE_ENV) ]; then \
+		echo "$(COMPOSE_ENV) already exists — leaving it untouched."; \
+		echo "Delete it first if you really want new secrets."; \
+		exit 0; \
+	fi
+	@node scripts/generate-demo-credentials.mjs > .env.generated
+	@{ \
+		echo "# GRIEFER — local environment. NEVER commit this file."; \
+		echo ""; \
+		echo "APP_ENV=development"; \
+		echo "RESPONSE_MODE=simulation"; \
+		echo "ALLOW_REAL_ACTIONS=false"; \
+		echo "SYNTHETIC_DATA_ONLY=true"; \
+		echo "SEED_SYNTHETIC_DEMO=true"; \
+		echo "POSTGRES_PASSWORD=griefer_local_dev"; \
+		echo ""; \
+		grep -v '^#' .env.generated | grep -v '^$$'; \
+	} > $(COMPOSE_ENV)
+	@rm -f .env.generated
+	@chmod 600 $(COMPOSE_ENV)
+	@echo "Wrote $(COMPOSE_ENV) (mode 600). The login password is in ~/.config/griefer/demo-credentials.txt"
+
 .PHONY: up
-up: ## Start PostgreSQL, NATS, OPA, the API and the console
-	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) up -d --build
+up: $(COMPOSE_ENV) ## Start PostgreSQL, NATS, OPA, the API and the console
+	$(COMPOSE) up -d --build
 	@echo ""
 	@echo "GRIEFER is starting."
 	@echo "  API      http://localhost:8080/health"
@@ -126,21 +153,29 @@ up: ## Start PostgreSQL, NATS, OPA, the API and the console
 	@echo ""
 	@echo "Next:  make demo"
 
+$(COMPOSE_ENV):
+	@echo "error: $(COMPOSE_ENV) is missing. Run: make secrets" >&2
+	@exit 1
+
 .PHONY: down
-down: ## Stop the stack and remove its volumes
-	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) down -v
+down: ## Stop the stack, keeping volumes
+	$(COMPOSE) down
+
+.PHONY: down-volumes
+down-volumes: ## Stop the stack and delete its volumes (synthetic data only)
+	$(COMPOSE) down -v
 
 .PHONY: logs
 logs: ## Follow stack logs
-	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) logs -f
+	$(COMPOSE) logs -f
 
 .PHONY: ps
 ps: ## Show stack status
-	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) ps
+	$(COMPOSE) ps
 
 .PHONY: compose-config
 compose-config: ## Validate the Compose file
-	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) config -q && echo "docker-compose.yml is valid"
+	$(COMPOSE) config -q && echo "docker-compose.yml is valid"
 
 .PHONY: demo
 demo: build-api ## Replay the synthetic scenario through the running API

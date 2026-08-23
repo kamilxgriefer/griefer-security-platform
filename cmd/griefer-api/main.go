@@ -22,6 +22,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 
+	"github.com/kamilxgriefer/griefer-security-platform/fixtures"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/api"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/audit"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/bus"
@@ -194,10 +195,23 @@ func run() error {
 		return fmt.Errorf("record startup audit entry: %w", err)
 	}
 
+	if cfg.Auth.InternalAPIToken == "" {
+		logger.Warn("no INTERNAL_API_TOKEN is configured; the API accepts any caller that can reach it")
+	} else {
+		logger.Info("service authentication enabled",
+			slog.String("scheme", "bearer"),
+			slog.String("exempt", "/health,/ready"))
+	}
+	if cfg.Response.SeedSyntheticDemo {
+		if err := seedSyntheticDemo(ctx, svc, store, logger); err != nil {
+			return fmt.Errorf("seed synthetic demonstration data: %w", err)
+		}
+	}
+
 	handler := api.NewRouter(svc, api.RouterOptions{
 		Registry: registry, MaxRequestBytes: cfg.HTTP.MaxRequestBytes,
 		RateLimitRPS: cfg.HTTP.RateLimitRPS, RateLimitBurst: cfg.HTTP.RateLimitBurst,
-		Logger: logger,
+		Logger: logger, InternalAPIToken: cfg.Auth.InternalAPIToken,
 	})
 
 	server := &http.Server{
@@ -306,6 +320,53 @@ func runPrintConfig() error {
 	return nil
 }
 
+// seedSyntheticDemo loads the synthetic scenario into an empty deployment.
+//
+// It runs BEFORE the HTTP server starts listening, so a demonstration
+// environment is never briefly reachable with nothing in it.
+//
+// The events go through Service.Ingest — the same validation, normalization,
+// control-plane guard, correlation and audit path any producer gets. A seeder
+// that wrote rows directly would prove nothing about the pipeline and would be
+// a way into the database that bypasses every check on it.
+//
+// Idempotent by design: if any incident already exists the seed is skipped, so
+// a container restart does not stack duplicates.
+func seedSyntheticDemo(ctx context.Context, svc *api.Service, store storage.Store, logger *slog.Logger) error {
+	existing, _, err := store.ListIncidents(ctx, storage.IncidentFilter{Limit: 1})
+	if err != nil {
+		return fmt.Errorf("check for existing incidents: %w", err)
+	}
+	if len(existing) > 0 {
+		logger.Info("synthetic demonstration data already present; skipping seed")
+		return nil
+	}
+
+	scenario, err := demo.LoadScenario(fixtures.ScenarioOne)
+	if err != nil {
+		return err
+	}
+	// Rebased so the scenario lands inside the ingest window rather than being
+	// rejected as stale on some future day.
+	events, err := scenario.Rebase(time.Now().UTC())
+	if err != nil {
+		return err
+	}
+
+	for i, raw := range events {
+		result, err := svc.Ingest(ctx, raw)
+		if err != nil {
+			return fmt.Errorf("ingest scenario event %d: %w", i+1, err)
+		}
+		logger.Debug("seeded synthetic event",
+			slog.Int("step", i+1), slog.String("event_id", result.EventID),
+			slog.Int("risk_score", result.RiskScore))
+	}
+	logger.Info("synthetic demonstration scenario loaded",
+		slog.String("scenario", scenario.ID), slog.Int("events", len(events)))
+	return nil
+}
+
 func newLogger(cfg config.Log) *slog.Logger {
 	level := slog.LevelInfo
 	switch cfg.Level {
@@ -377,6 +438,7 @@ func newPublisher(ctx context.Context, cfg config.Config, logger *slog.Logger) b
 	}
 	publisher, err := bus.NewNATSPublisher(ctx, bus.NATSOptions{
 		URL: cfg.NATS.URL, Stream: cfg.NATS.Stream, Subject: cfg.NATS.Subject,
+		User: cfg.NATS.User, Password: cfg.NATS.Password,
 	})
 	if err != nil {
 		logger.Error("event bus unavailable at startup; continuing without fan-out",
@@ -384,6 +446,7 @@ func newPublisher(ctx context.Context, cfg config.Config, logger *slog.Logger) b
 		return bus.NewNoopPublisher()
 	}
 	logger.Info("event bus connected",
-		slog.String("url", cfg.NATS.URL), slog.String("stream", cfg.NATS.Stream))
+		slog.String("url", cfg.NATS.URL), slog.String("stream", cfg.NATS.Stream),
+		slog.Bool("authenticated", cfg.NATS.User != ""))
 	return publisher
 }

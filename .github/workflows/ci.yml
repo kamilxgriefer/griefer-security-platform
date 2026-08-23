@@ -274,6 +274,9 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          # The test stage is last in the file, and a build with no target
+          # produces the last stage.
+          target: runtime
           push: false
           load: true
           tags: griefer-api:ci

@@ -57,6 +57,11 @@ func TestAgainstLiveServices(t *testing.T) {
 	publisher, err := bus.NewNATSPublisher(ctx, bus.NATSOptions{
 		URL: natsURL, Stream: "GRIEFER_LIVE_TEST", Subject: "griefer.live.events",
 		ConnectTimeout: 10 * time.Second, MaxAge: time.Hour,
+		// A deployed bus requires credentials. Leaving these empty passed only
+		// while the local server accepted anonymous clients, which was itself
+		// the bug.
+		User:     os.Getenv("GRIEFER_TEST_NATS_USER"),
+		Password: os.Getenv("GRIEFER_TEST_NATS_PASSWORD"),
 	})
 	if err != nil {
 		t.Fatalf("NewNATSPublisher() error = %v", err)

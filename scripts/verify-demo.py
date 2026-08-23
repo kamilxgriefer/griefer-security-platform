@@ -11,6 +11,7 @@ Usage: scripts/verify-demo.py [api-base-url]
 from __future__ import annotations
 
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -29,8 +30,20 @@ EXPECTED_VERDICTS = {
 }
 
 
+def auth_headers() -> dict:
+    """The service credential, when the API requires one.
+
+    The script talks to the API through the same authenticated path the console
+    uses, rather than a privileged side door — a verification tool that can
+    bypass authentication proves less than it appears to.
+    """
+    token = os.environ.get("INTERNAL_API_TOKEN", "")
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def get(url: str) -> dict:
-    with urllib.request.urlopen(url, timeout=TIMEOUT_SECONDS) as response:
+    request = urllib.request.Request(url, headers=auth_headers())
+    with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
         return json.load(response)
 
 
@@ -38,7 +51,7 @@ def post(url: str, payload: dict) -> dict:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **auth_headers()},
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:

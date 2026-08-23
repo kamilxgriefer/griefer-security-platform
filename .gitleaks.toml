@@ -14,17 +14,34 @@
 useDefault = true
 
 [[rules]]
-id = "griefer-env-file"
-description = "A populated .env file must never be committed or left in a build context"
-regex = '''(?i)^\s*GRIEFER_[A-Z_]*(?:DSN|PASSWORD|SECRET|TOKEN|KEY)\s*=\s*\S+'''
-path = '''\.env($|\.)'''
+id = "griefer-secret-assignment"
+description = "A GRIEFER secret assigned a value in a file left in the working tree"
+# The variables this deployment actually uses, rather than a generic guess.
+# A stray .env, .env.backup or exported shell snippet holding any of these
+# is exactly the accident the working-tree scan exists to catch.
+regex = '''(?i)^\s*(?:export\s+)?(INTERNAL_API_TOKEN|DEMO_SESSION_SECRET|DEMO_PASSWORD_HASH|DEMO_PASSWORD_SALT|NATS_PASSWORD|POSTGRES_PASSWORD|DATABASE_URL|GRIEFER_POSTGRES_DSN|GRIEFER_[A-Z_]*(?:TOKEN|SECRET|PASSWORD|KEY))\s*=\s*\S+'''
 [rules.allowlist]
-# .env.example carries documented local-development defaults on purpose.
-paths = ['''\.env\.example$''']
+description = "Documented placeholders and visible local-development defaults"
+regexes = [
+  # .env.example ships local defaults on purpose; they are not secrets.
+  '''griefer_local_dev''',
+  '''<[a-z-]+>''',
+  '''REPLACE_ME''',
+]
+paths = ['''\\.env\\.example$''', '''^docs/''', '''\\.md$''']
 
 [allowlist]
-description = "Build output and vendored dependencies are not GRIEFER source"
+description = "Build output, vendored dependencies, and the one documented local secrets file"
 paths = [
+  # .env.local is created by `make secrets` and exists to hold local secrets.
+  # Flagging it on every run is noise, and a scanner that always reports
+  # something is a scanner people stop reading.
+  #
+  # Note this is deliberately ONE exact filename, not a .env* pattern: a stray
+  # .env, .env.production or .env.backup is exactly the accident this scan is
+  # meant to catch, and those are still scanned.
+  '''^\.env\.local$''',
+
   '''(^|/)node_modules/''',
   '''(^|/)\.next/''',
   '''(^|/)\.local/''',

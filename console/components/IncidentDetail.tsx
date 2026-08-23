@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { Card, EmptyState, Stat } from "@/components/Card";
 import { EntityGraph } from "@/components/EntityGraph";
+import { EvaluateAction } from "@/components/EvaluateAction";
 import {
   ActionStatusBadge,
   CriticalityBadge,
@@ -248,6 +249,7 @@ export function IncidentDetail({
             {recommended.map((action) => (
               <RecommendedActionRow
                 key={action.action_type}
+                incidentId={incident.id}
                 action={action}
                 decision={decisionsByAction.get(action.action_type)}
               />
@@ -260,9 +262,11 @@ export function IncidentDetail({
 }
 
 function RecommendedActionRow({
+  incidentId,
   action,
   decision,
 }: {
+  readonly incidentId: string;
   readonly action: RecommendedAction;
   readonly decision: ResponseAction | undefined;
 }) {
@@ -354,6 +358,8 @@ function RecommendedActionRow({
           )}
         </div>
       )}
+
+      <EvaluateAction incidentId={incidentId} actionType={action.action_type} />
     </li>
   );
 }

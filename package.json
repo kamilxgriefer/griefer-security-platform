@@ -1,0 +1,19 @@
+{
+  "name": "griefer-repo-tooling",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Repository tooling for GRIEFER. Not the console application — that lives in console/.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "generate:brand-assets": "node scripts/generate-brand-assets.mjs",
+    "verify:brand-assets": "node scripts/verify-brand-assets.mjs"
+  },
+  "devDependencies": {
+    "sharp": "0.34.5"
+  }
+}

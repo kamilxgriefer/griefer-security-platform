@@ -7,6 +7,12 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL(".", import.meta.url)),
+      // `server-only` throws on import outside a React Server Component, which
+      // is the point of the package — and which makes server modules
+      // untestable. Stubbing it here lets the tests exercise the real code;
+      // the guarantee it provides is enforced by the Next.js build, not by the
+      // test runner.
+      "server-only": fileURLToPath(new URL("./__tests__/stubs/server-only.ts", import.meta.url)),
     },
   },
   test: {

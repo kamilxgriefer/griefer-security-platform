@@ -57,6 +57,9 @@ export function Nav() {
               </Link>
             </li>
           ))}
+          <li className="ml-2 border-l border-[var(--color-surface-border)] pl-2">
+            <SignOutButton />
+          </li>
         </ul>
 
         <button
@@ -92,8 +95,48 @@ export function Nav() {
               </Link>
             </li>
           ))}
+          <li className="pt-3">
+            <SignOutButton />
+          </li>
         </ul>
       )}
     </nav>
+  );
+}
+
+/**
+ * Sign out.
+ *
+ * A POST, not a link: logout changes state, and a GET endpoint that ends a
+ * session can be triggered by any page that can get the browser to load a URL.
+ */
+function SignOutButton() {
+  const [busy, setBusy] = useState(false);
+
+  async function signOut() {
+    setBusy(true);
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      /*
+       * A full navigation is deliberate at an authentication boundary. A
+       * client-side transition can serve a cached RSC payload rendered under
+       * the previous session — showing the console to someone who just signed
+       * out, or the login page to someone who just signed in.
+       */
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+      window.location.assign("/login");
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={signOut}
+      disabled={busy}
+      className="rounded border border-[var(--color-surface-border-strong)] px-3 py-1.5 text-[13px] text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] disabled:opacity-60"
+    >
+      {busy ? "Signing out…" : "Sign out"}
+    </button>
   );
 }

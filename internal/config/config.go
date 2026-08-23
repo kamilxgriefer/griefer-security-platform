@@ -24,6 +24,7 @@ type Config struct {
 	OPA      OPA
 	Log      Log
 	Response Response
+	Auth     Auth
 }
 
 // HTTP configures the API server.
@@ -54,10 +55,12 @@ type Postgres struct {
 
 // NATS configures the event bus.
 type NATS struct {
-	Enabled bool
-	URL     string
-	Stream  string
-	Subject string
+	Enabled  bool
+	URL      string
+	Stream   string
+	Subject  string
+	User     string
+	Password string
 }
 
 // OPA configures the Policy Kernel.
@@ -81,8 +84,26 @@ type Log struct {
 
 // Response configures the response engine.
 type Response struct {
-	// Mode is fixed to "simulate" in v0.1.
+	// Mode is fixed to simulation in v0.1.
 	Mode string
+	// AllowRealActions must stay false. It is surfaced as configuration so the
+	// guarantee is visible in `griefer-api -print-config`, and Validate rejects
+	// any attempt to turn it on.
+	AllowRealActions bool
+	// SyntheticDataOnly records that this deployment carries invented data.
+	SyntheticDataOnly bool
+	// SeedSyntheticDemo asks the API to replay the synthetic scenario into an
+	// empty database at startup. Idempotent: it is a no-op once an incident
+	// exists.
+	SeedSyntheticDemo bool
+}
+
+// Auth configures the service-to-service credential the API requires.
+type Auth struct {
+	// InternalAPIToken is the shared secret the console's server-side gateway
+	// presents. Empty disables the check, which is only acceptable on a
+	// loopback bind — Validate enforces that pairing.
+	InternalAPIToken string
 }
 
 // Warning is a non-fatal configuration concern surfaced at startup.
@@ -94,9 +115,9 @@ type Warning struct {
 // Load reads configuration from the process environment.
 func Load() (Config, []Warning, error) {
 	cfg := Config{
-		Env: envString("GRIEFER_ENV", "local"),
+		Env: envFirst("local", "APP_ENV", "GRIEFER_ENV"),
 		HTTP: HTTP{
-			Addr:            envString("GRIEFER_HTTP_ADDR", "127.0.0.1:8080"),
+			Addr:            listenAddr(),
 			ReadTimeout:     envDuration("GRIEFER_READ_TIMEOUT", 10*time.Second),
 			WriteTimeout:    envDuration("GRIEFER_WRITE_TIMEOUT", 30*time.Second),
 			IdleTimeout:     envDuration("GRIEFER_IDLE_TIMEOUT", 120*time.Second),
@@ -109,19 +130,21 @@ func Load() (Config, []Warning, error) {
 		},
 		Postgres: Postgres{
 			Enabled:         envBool("GRIEFER_STORAGE_POSTGRES", false),
-			DSN:             envString("GRIEFER_POSTGRES_DSN", ""),
+			DSN:             envFirst("", "DATABASE_URL", "GRIEFER_POSTGRES_DSN"),
 			MaxOpenConns:    int32(envInt("GRIEFER_DB_MAX_OPEN_CONNS", 20)),
 			MaxIdleConns:    int32(envInt("GRIEFER_DB_MAX_IDLE_CONNS", 5)),
 			ConnMaxLifetime: envDuration("GRIEFER_DB_CONN_MAX_LIFETIME", 30*time.Minute),
 		},
 		NATS: NATS{
-			Enabled: envBool("GRIEFER_NATS_ENABLED", false),
-			URL:     envString("GRIEFER_NATS_URL", "nats://localhost:4222"),
-			Stream:  envString("GRIEFER_NATS_STREAM", "GRIEFER_EVENTS"),
-			Subject: envString("GRIEFER_NATS_SUBJECT", "griefer.events.v1"),
+			Enabled:  envBool("GRIEFER_NATS_ENABLED", false),
+			URL:      envFirst("nats://localhost:4222", "NATS_URL", "GRIEFER_NATS_URL"),
+			User:     envFirst("", "NATS_USER", "GRIEFER_NATS_USER"),
+			Password: envFirst("", "NATS_PASSWORD", "GRIEFER_NATS_PASSWORD"),
+			Stream:   envString("GRIEFER_NATS_STREAM", "GRIEFER_EVENTS"),
+			Subject:  envString("GRIEFER_NATS_SUBJECT", "griefer.events.v1"),
 		},
 		OPA: OPA{
-			URL:          envString("GRIEFER_OPA_URL", ""),
+			URL:          envFirst("", "OPA_URL", "GRIEFER_OPA_URL"),
 			DecisionPath: envString("GRIEFER_OPA_DECISION_PATH", "griefer/response/decision"),
 			Timeout:      envDuration("GRIEFER_OPA_TIMEOUT", 3*time.Second),
 			FailClosed:   envBool("GRIEFER_OPA_FAIL_CLOSED", true),
@@ -131,7 +154,13 @@ func Load() (Config, []Warning, error) {
 			Format: envString("GRIEFER_LOG_FORMAT", "json"),
 		},
 		Response: Response{
-			Mode: envString("GRIEFER_RESPONSE_MODE", "simulate"),
+			Mode:              normalizeResponseMode(envFirst("simulate", "RESPONSE_MODE", "GRIEFER_RESPONSE_MODE")),
+			AllowRealActions:  envBool("ALLOW_REAL_ACTIONS", false),
+			SyntheticDataOnly: envBool("SYNTHETIC_DATA_ONLY", true),
+			SeedSyntheticDemo: envBool("SEED_SYNTHETIC_DEMO", false),
+		},
+		Auth: Auth{
+			InternalAPIToken: envFirst("", "INTERNAL_API_TOKEN", "GRIEFER_INTERNAL_API_TOKEN"),
 		},
 	}
 	warnings, err := cfg.Validate()
@@ -150,15 +179,26 @@ func (c Config) Validate() ([]Warning, error) {
 		return nil, fmt.Errorf("config: GRIEFER_HTTP_ADDR port %q is not numeric", port)
 	}
 	if isPublicBind(host) {
-		if !c.HTTP.AllowPublicBind {
+		// A non-loopback bind is acceptable when the API actually authenticates
+		// its callers. Before INTERNAL_API_TOKEN existed the only honest answer
+		// was to refuse; now the operator has two ways to satisfy the check, and
+		// exactly one of them is a real control.
+		switch {
+		case c.Auth.InternalAPIToken != "":
+			warnings = append(warnings, Warning{
+				Setting: "GRIEFER_HTTP_ADDR",
+				Message: fmt.Sprintf("listening on %q; every application endpoint requires INTERNAL_API_TOKEN, but the platform must still keep this service off the public internet", c.HTTP.Addr),
+			})
+		case c.HTTP.AllowPublicBind:
+			warnings = append(warnings, Warning{
+				Setting: "GRIEFER_HTTP_ADDR",
+				Message: fmt.Sprintf("listening on %q with NO authentication; this is acceptable only on an isolated network", c.HTTP.Addr),
+			})
+		default:
 			return nil, fmt.Errorf(
-				"config: refusing to bind %q. GRIEFER v0.1 has no authentication, so a non-loopback bind exposes an unauthenticated ingest and audit API. "+
-					"Set GRIEFER_ALLOW_PUBLIC_BIND=true only on an isolated lab network", c.HTTP.Addr)
+				"config: refusing to bind %q with no authentication. Set INTERNAL_API_TOKEN so the API requires a credential, "+
+					"or set GRIEFER_ALLOW_PUBLIC_BIND=true to accept an unauthenticated listener on an isolated lab network", c.HTTP.Addr)
 		}
-		warnings = append(warnings, Warning{
-			Setting: "GRIEFER_HTTP_ADDR",
-			Message: fmt.Sprintf("listening on non-loopback address %q with no authentication; restrict network access to this port", c.HTTP.Addr),
-		})
 	}
 
 	if c.HTTP.MaxRequestBytes <= 0 {
@@ -209,6 +249,21 @@ func (c Config) Validate() ([]Warning, error) {
 		return nil, fmt.Errorf("config: GRIEFER_NATS_ENABLED=true requires GRIEFER_NATS_URL")
 	}
 
+	if c.Response.AllowRealActions {
+		return nil, fmt.Errorf(
+			"config: ALLOW_REAL_ACTIONS=true is refused. GRIEFER v0.1 ships no actuator, so enabling it would " +
+				"advertise a capability that does not exist while removing the guard that says so")
+	}
+	if !c.Response.SyntheticDataOnly {
+		warnings = append(warnings, Warning{
+			Setting: "SYNTHETIC_DATA_ONLY",
+			Message: "set to false; GRIEFER v0.1 is a prototype and has no data-handling guarantees for real telemetry",
+		})
+	}
+	if c.NATS.Enabled && c.NATS.User != "" && c.NATS.Password == "" {
+		return nil, fmt.Errorf("config: NATS_USER is set without NATS_PASSWORD")
+	}
+
 	switch c.Response.Mode {
 	case "simulate":
 	case "execute":
@@ -232,6 +287,23 @@ func (c Config) Validate() ([]Warning, error) {
 	return warnings, nil
 }
 
+// listenAddr resolves the address the API listens on.
+//
+// Precedence: an explicit GRIEFER_HTTP_ADDR always wins. Otherwise, if the
+// platform injected PORT — the convention every PaaS follows — bind every
+// interface on that port, because inside a container the container's own
+// interface is not the internet; what makes a service reachable is whether the
+// platform gave it a public domain. Failing that, loopback.
+func listenAddr() string {
+	if addr := envString("GRIEFER_HTTP_ADDR", ""); addr != "" {
+		return addr
+	}
+	if port := envString("PORT", ""); port != "" {
+		return net.JoinHostPort("0.0.0.0", port)
+	}
+	return "127.0.0.1:8080"
+}
+
 // isPublicBind reports whether host would accept connections from outside the
 // local machine.
 func isPublicBind(host string) bool {
@@ -253,7 +325,39 @@ func (c Config) Redacted() Config {
 	if out.Postgres.DSN != "" {
 		out.Postgres.DSN = "[redacted]"
 	}
+	if out.Auth.InternalAPIToken != "" {
+		out.Auth.InternalAPIToken = "[redacted]"
+	}
+	if out.NATS.Password != "" {
+		out.NATS.Password = "[redacted]"
+	}
 	return out
+}
+
+// envFirst returns the first of names that is set to a non-empty value.
+//
+// GRIEFER's own variables are prefixed GRIEFER_, but a PaaS injects
+// conventional names — PORT, DATABASE_URL — and a deployment manifest reads
+// better using them. Accepting both means the manifest can use the platform's
+// vocabulary without the code growing a second configuration path. The
+// platform-conventional name is listed first and wins.
+func envFirst(fallback string, names ...string) string {
+	for _, name := range names {
+		if v, ok := os.LookupEnv(name); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return fallback
+}
+
+// normalizeResponseMode accepts both spellings of the simulation mode.
+// "simulate" is the internal value; "simulation" reads better in a deployment
+// manifest, and rejecting it would be pedantry that costs an outage.
+func normalizeResponseMode(mode string) string {
+	if strings.EqualFold(mode, "simulation") {
+		return "simulate"
+	}
+	return strings.ToLower(mode)
 }
 
 func envString(key, fallback string) string {

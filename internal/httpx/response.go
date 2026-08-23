@@ -15,6 +15,7 @@ const (
 	CodeValidationFailed   = "validation_failed"
 	CodeMalformedRequest   = "malformed_request"
 	CodeNotFound           = "not_found"
+	CodeUnauthorized       = "unauthorized"
 	CodePayloadTooLarge    = "payload_too_large"
 	CodeRateLimited        = "rate_limited"
 	CodeUnsupportedMedia   = "unsupported_media_type"

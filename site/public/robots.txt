@@ -1,0 +1,4 @@
+# GRIEFER is in early development. Nothing here is ready to be indexed, and the
+# platform itself is not publicly reachable.
+User-agent: *
+Disallow: /

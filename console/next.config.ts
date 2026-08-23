@@ -34,6 +34,36 @@ const config: NextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "Referrer-Policy", value: "no-referrer" },
+          // The console needs none of these. Denying them outright means a
+          // future dependency cannot quietly start using one.
+          {
+            key: "Permissions-Policy",
+            value: [
+              "accelerometer=()",
+              "camera=()",
+              "geolocation=()",
+              "gyroscope=()",
+              "magnetometer=()",
+              "microphone=()",
+              "payment=()",
+              "usb=()",
+              "interest-cohort=()",
+            ].join(", "),
+          },
+          // Incident data must never sit in a shared cache. Every page behind
+          // the gate is per-session by definition.
+          { key: "Cache-Control", value: "no-store, private" },
+          ...(isProduction
+            ? [
+                {
+                  key: "Strict-Transport-Security",
+                  // Two years, subdomains included. No preload directive: that
+                  // is a one-way commitment for a domain this project does not
+                  // own, and it belongs to whoever does.
+                  value: "max-age=63072000; includeSubDomains",
+                },
+              ]
+            : []),
           {
             key: "Content-Security-Policy",
             // The console renders server-side and ships no third-party script,

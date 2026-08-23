@@ -1,0 +1,34 @@
+# GRIEFER gitleaks configuration.
+#
+# Two scans run in CI: one over git history, and one over the working tree. The
+# working-tree scan exists to catch a secret in a file that is present but not
+# yet committed — a forgotten .env, a downloaded key. It does NOT respect
+# .gitignore, so without this allowlist it also scans build output.
+#
+# Next.js bundles inline example strings that match generic-credential patterns.
+# Those are not GRIEFER secrets, they are not committed, and letting them fail
+# the scan would train everyone to ignore it — which is how a real finding gets
+# missed.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "griefer-env-file"
+description = "A populated .env file must never be committed or left in a build context"
+regex = '''(?i)^\s*GRIEFER_[A-Z_]*(?:DSN|PASSWORD|SECRET|TOKEN|KEY)\s*=\s*\S+'''
+path = '''\.env($|\.)'''
+[rules.allowlist]
+# .env.example carries documented local-development defaults on purpose.
+paths = ['''\.env\.example$''']
+
+[allowlist]
+description = "Build output and vendored dependencies are not GRIEFER source"
+paths = [
+  '''(^|/)node_modules/''',
+  '''(^|/)\.next/''',
+  '''(^|/)\.local/''',
+  '''(^|/)bin/''',
+  '''(^|/)dist/''',
+  '''(^|/)coverage/''',
+]

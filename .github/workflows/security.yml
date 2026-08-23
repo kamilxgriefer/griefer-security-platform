@@ -75,10 +75,10 @@ jobs:
       - name: Scan history for secrets
         # The binary directly rather than the action wrapper: one fewer
         # third-party action holding a token, and the exit code is ours to read.
-        run: gitleaks detect --source . --no-banner --redact --verbose --exit-code 1
+        run: gitleaks detect --source . --config .gitleaks.toml --no-banner --redact --verbose --exit-code 1
 
       - name: Scan the working tree for secrets
-        run: gitleaks detect --source . --no-git --no-banner --redact --verbose --exit-code 1
+        run: gitleaks detect --source . --no-git --config .gitleaks.toml --no-banner --redact --verbose --exit-code 1
 
   filesystem:
     name: Filesystem scan

@@ -1,0 +1,117 @@
+{
+  "entities": [
+    {
+      "type": "identity",
+      "key": "u-1042",
+      "name": "j.okafor@halberd.example",
+      "criticality": "high",
+      "attributes": {
+        "department": "Finance Systems",
+        "employment_type": "permanent",
+        "privileged_role_eligible": "true"
+      }
+    },
+    {
+      "type": "identity",
+      "key": "u-2210",
+      "name": "s.varga@halberd.example",
+      "criticality": "medium",
+      "attributes": { "department": "Support" }
+    },
+    {
+      "type": "endpoint",
+      "key": "wks-4471",
+      "name": "wks-4471.halberd.example",
+      "criticality": "medium",
+      "attributes": { "os": "Windows 11", "managed": "true", "owner": "u-1042" }
+    },
+    {
+      "type": "application",
+      "key": "app-billing-portal",
+      "name": "Halberd Billing Portal",
+      "criticality": "high",
+      "attributes": { "tier": "business-critical", "owner_team": "Finance Systems" }
+    },
+    {
+      "type": "secret",
+      "key": "sec-billing-api-key",
+      "name": "billing-portal/api-key",
+      "criticality": "critical",
+      "attributes": {
+        "store": "synthetic-vault",
+        "rotation_days": "90",
+        "note": "identifier only — no secret value is stored in this repository"
+      }
+    },
+    {
+      "type": "cloud_resource",
+      "key": "arn:aws:s3:::halberd-finance-archive",
+      "name": "halberd-finance-archive",
+      "criticality": "critical",
+      "attributes": {
+        "provider": "aws",
+        "resource_type": "s3_bucket",
+        "account_id": "000000000000",
+        "classification": "financial-records"
+      }
+    },
+    {
+      "type": "service",
+      "key": "svc-payments-api",
+      "name": "Payments API",
+      "criticality": "high",
+      "attributes": { "runtime": "container", "exposure": "internal" }
+    },
+    {
+      "type": "repository",
+      "key": "halberd-logistics/billing-service",
+      "name": "halberd-logistics/billing-service",
+      "criticality": "high",
+      "attributes": { "visibility": "private" }
+    },
+    {
+      "type": "account",
+      "key": "svc-billing-sync",
+      "name": "svc-billing-sync",
+      "criticality": "high",
+      "attributes": { "kind": "service_account", "interactive_signin": "false" }
+    }
+  ],
+  "edges": [
+    {
+      "from": "identity:u-1042",
+      "to": "application:app-billing-portal",
+      "relation": "granted_role_on"
+    },
+    {
+      "from": "application:app-billing-portal",
+      "to": "secret:sec-billing-api-key",
+      "relation": "owns"
+    },
+    {
+      "from": "secret:sec-billing-api-key",
+      "to": "cloud_resource:arn:aws:s3:::halberd-finance-archive",
+      "relation": "grants_access_to"
+    },
+    {
+      "from": "service:svc-payments-api",
+      "to": "cloud_resource:arn:aws:s3:::halberd-finance-archive",
+      "relation": "runs_on"
+    },
+    {
+      "from": "repository:halberd-logistics/billing-service",
+      "to": "service:svc-payments-api",
+      "relation": "owns"
+    },
+    {
+      "from": "account:svc-billing-sync",
+      "to": "application:app-billing-portal",
+      "relation": "member_of"
+    },
+    {
+      "from": "identity:u-1042",
+      "to": "endpoint:wks-4471",
+      "relation": "used_device"
+    }
+  ]
+}

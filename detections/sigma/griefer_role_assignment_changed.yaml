@@ -1,0 +1,26 @@
+title: Directory Role Assignment Changed
+id: febeaf9a-4243-45b9-91ef-519861867924
+status: experimental
+description: |
+  Detects modification of an identity's directory role assignments. Privilege
+  change converts a foothold into durable access and is one of the highest-value
+  steps in an identity-driven intrusion.
+references:
+  - https://github.com/kamilxgriefer/griefer-security-platform/blob/main/docs/ATTACK_SCENARIOS.md
+author: GRIEFER project
+date: 2026/08/23
+tags:
+  - attack.persistence
+  - attack.privilege_escalation
+  - attack.t1098
+logsource:
+  category: iam
+  product: griefer
+detection:
+  selection:
+    event_type: role_assignment_changed
+  condition: selection
+falsepositives:
+  - Scheduled access reviews and approved just-in-time elevation
+  - Automated provisioning from an HR system
+level: high

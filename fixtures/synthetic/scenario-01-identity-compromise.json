@@ -1,0 +1,182 @@
+{
+  "id": "scenario-01-identity-compromise",
+  "title": "Identity compromise leading to an attempt on a critical archive",
+  "description": "A five-step synthetic chain against the fictional Halberd Logistics environment. Each step on its own is weak or routine; the point of the scenario is that GRIEFER only reaches a high-risk verdict once the steps corroborate each other across independent evidence categories.",
+  "synthetic": true,
+  "events": [
+    {
+      "schema_version": "0.1",
+      "timestamp": "2026-08-23T09:14:22Z",
+      "source_type": "identity_provider",
+      "source_name": "synthetic-idp-lab",
+      "event_type": "user_signin",
+      "category": "authentication",
+      "severity": "medium",
+      "actor": {
+        "type": "identity",
+        "id": "u-1042",
+        "name": "j.okafor@halberd.example",
+        "domain": "halberd.example",
+        "privileged": false
+      },
+      "target": {
+        "type": "application",
+        "id": "app-billing-portal",
+        "name": "Halberd Billing Portal",
+        "criticality": "high"
+      },
+      "device": {
+        "id": "wks-4471",
+        "hostname": "wks-4471.halberd.example",
+        "os": "Windows 11",
+        "managed": true,
+        "compliant": true
+      },
+      "network": {
+        "source_ip": "203.0.113.77",
+        "country": "NL",
+        "asn": "AS64500",
+        "first_seen_for_actor": true
+      },
+      "labels": {
+        "outcome": "success",
+        "auth_method": "password_and_totp",
+        "dataset": "synthetic"
+      }
+    },
+    {
+      "schema_version": "0.1",
+      "timestamp": "2026-08-23T09:19:05Z",
+      "source_type": "identity_provider",
+      "source_name": "synthetic-idp-lab",
+      "event_type": "session_created",
+      "category": "session_anomaly",
+      "severity": "medium",
+      "actor": {
+        "type": "identity",
+        "id": "u-1042",
+        "name": "j.okafor@halberd.example",
+        "domain": "halberd.example",
+        "session_id": "sess-9f2c4d18",
+        "privileged": true
+      },
+      "target": {
+        "type": "application",
+        "id": "app-billing-portal",
+        "name": "Halberd Billing Portal",
+        "criticality": "high"
+      },
+      "network": { "source_ip": "203.0.113.77", "country": "NL" },
+      "labels": {
+        "outcome": "success",
+        "session_kind": "administrative",
+        "dataset": "synthetic"
+      }
+    },
+    {
+      "schema_version": "0.1",
+      "timestamp": "2026-08-23T09:26:41Z",
+      "source_type": "identity_provider",
+      "source_name": "synthetic-idp-lab",
+      "event_type": "role_assignment_changed",
+      "category": "privilege_escalation",
+      "severity": "high",
+      "actor": {
+        "type": "identity",
+        "id": "u-1042",
+        "name": "j.okafor@halberd.example",
+        "domain": "halberd.example",
+        "session_id": "sess-9f2c4d18",
+        "privileged": true
+      },
+      "target": {
+        "type": "identity",
+        "id": "u-1042",
+        "name": "j.okafor@halberd.example",
+        "criticality": "high"
+      },
+      "network": { "source_ip": "203.0.113.77", "country": "NL" },
+      "labels": {
+        "outcome": "success",
+        "role_added": "billing-portal-owner",
+        "approval_ticket": "none",
+        "dataset": "synthetic"
+      }
+    },
+    {
+      "schema_version": "0.1",
+      "timestamp": "2026-08-23T09:33:12Z",
+      "source_type": "secret_manager",
+      "source_name": "synthetic-vault-lab",
+      "event_type": "secret_accessed",
+      "category": "credential_access",
+      "severity": "high",
+      "actor": {
+        "type": "identity",
+        "id": "u-1042",
+        "name": "j.okafor@halberd.example",
+        "domain": "halberd.example",
+        "session_id": "sess-9f2c4d18",
+        "privileged": true
+      },
+      "target": {
+        "type": "secret",
+        "id": "sec-billing-api-key",
+        "name": "billing-portal/api-key",
+        "criticality": "critical"
+      },
+      "network": { "source_ip": "203.0.113.77", "country": "NL" },
+      "raw_reference": {
+        "uri": "synthetic://vault-lab/audit/2026-08-23/evt-33122",
+        "size_bytes": 1841
+      },
+      "labels": {
+        "outcome": "success",
+        "secret_kind": "api_key",
+        "first_access_by_actor": "true",
+        "dataset": "synthetic"
+      }
+    },
+    {
+      "schema_version": "0.1",
+      "timestamp": "2026-08-23T09:41:58Z",
+      "source_type": "cloud_audit",
+      "source_name": "synthetic-cloudtrail-lab",
+      "event_type": "cloud_resource_access",
+      "category": "cloud_access",
+      "severity": "critical",
+      "actor": {
+        "type": "identity",
+        "id": "u-1042",
+        "name": "j.okafor@halberd.example",
+        "domain": "halberd.example",
+        "session_id": "sess-9f2c4d18",
+        "privileged": true
+      },
+      "target": {
+        "type": "cloud_resource",
+        "id": "arn:aws:s3:::halberd-finance-archive",
+        "name": "halberd-finance-archive",
+        "criticality": "critical"
+      },
+      "cloud": {
+        "provider": "aws",
+        "account_id": "000000000000",
+        "region": "eu-central-1",
+        "resource_id": "arn:aws:s3:::halberd-finance-archive",
+        "resource_type": "s3_bucket"
+      },
+      "network": { "source_ip": "203.0.113.77", "country": "NL" },
+      "raw_reference": {
+        "uri": "synthetic://cloudtrail-lab/2026-08-23/evt-41958",
+        "size_bytes": 3120
+      },
+      "labels": {
+        "outcome": "denied",
+        "operation": "ListObjectsV2",
+        "deny_reason": "bucket_policy",
+        "dataset": "synthetic"
+      }
+    }
+  ]
+}

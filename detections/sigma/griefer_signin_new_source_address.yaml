@@ -1,0 +1,27 @@
+title: Sign-in From Source Address Not Previously Seen For Identity
+id: 6ac5c689-2c6b-46ea-bdcb-57c0cbbe2ea8
+status: experimental
+description: |
+  Detects a successful interactive sign-in from a source address the identity
+  provider has not previously observed for that identity. Exported by GRIEFER as
+  portable detection content. This is intentionally a weak, high-volume signal:
+  it is meant to be correlated, not alerted on directly.
+references:
+  - https://github.com/kamilxgriefer/griefer-security-platform/blob/main/docs/ATTACK_SCENARIOS.md
+author: GRIEFER project
+date: 2026/08/23
+tags:
+  - attack.initial_access
+  - attack.t1078
+logsource:
+  category: authentication
+  product: griefer
+detection:
+  selection:
+    event_type: user_signin
+    network.first_seen_for_actor: true
+  condition: selection
+falsepositives:
+  - Legitimate travel, a new office network, or a VPN egress change
+  - Mobile carrier address rotation
+level: medium

@@ -1,0 +1,124 @@
+# GRIEFER correlation rules — identity-centric attack chain.
+#
+# These rules are DATA. The engine in internal/correlation evaluates them
+# against a closed allowlist of event fields; there is no expression evaluation
+# and no way for a rule (or an event) to reach anything outside that allowlist.
+#
+# Every rule declares the evidence `category` it contributes. Categories are not
+# cosmetic: the Policy Kernel counts DISTINCT categories when deciding whether a
+# response may be taken without a human, so two rules sharing a category do not
+# corroborate each other.
+version: "0.1"
+rules:
+  - id: GRF-CORR-0001
+    title: Sign-in from an address not previously seen for this identity
+    description: >-
+      The identity provider reported a successful interactive sign-in from a
+      source address it has not previously observed for this identity. On its
+      own this is a weak signal — travel, a new office and a VPN change all look
+      like this — so it is deliberately scored as medium severity with low
+      confidence and is never sufficient to trigger automated containment.
+    category: authentication
+    severity: medium
+    confidence: 0.55
+    techniques:
+      - id: T1078
+        name: Valid Accounts
+        tactic: Initial Access
+    match:
+      event_type: [user_signin]
+      conditions:
+        - field: network.first_seen_for_actor
+          equals: "true"
+
+  - id: GRF-CORR-0002
+    title: Privileged session established
+    description: >-
+      A session carrying elevated privileges was created for this identity.
+      Expected during normal administrative work; meaningful when it follows an
+      unusual authentication.
+    category: session_anomaly
+    severity: medium
+    confidence: 0.60
+    techniques:
+      - id: T1078.004
+        name: "Valid Accounts: Cloud Accounts"
+        tactic: Persistence
+    match:
+      event_type: [session_created]
+      conditions:
+        - field: actor.privileged
+          equals: "true"
+
+  - id: GRF-CORR-0003
+    title: Directory role assignment changed
+    description: >-
+      The identity's role assignments were modified. Privilege change is one of
+      the highest-value steps in an identity-driven intrusion because it
+      converts a foothold into durable access.
+    category: privilege_escalation
+    severity: high
+    confidence: 0.75
+    techniques:
+      - id: T1098
+        name: Account Manipulation
+        tactic: Persistence
+    match:
+      event_type: [role_assignment_changed]
+
+  - id: GRF-CORR-0004
+    title: Application secret retrieved
+    description: >-
+      A stored application secret was read. Secrets are lateral-movement
+      currency: the value of this signal comes from what the secret unlocks, not
+      from the read itself.
+    category: credential_access
+    severity: high
+    confidence: 0.80
+    techniques:
+      - id: T1552.001
+        name: "Unsecured Credentials: Credentials In Files"
+        tactic: Credential Access
+    match:
+      event_type: [secret_accessed]
+      conditions:
+        - field: target.type
+          equals: secret
+
+  - id: GRF-CORR-0005
+    title: Access attempt against a critical cloud resource
+    description: >-
+      An access attempt was recorded against a resource the asset inventory
+      classifies as critical. Recorded regardless of outcome — a denied attempt
+      against a crown-jewel asset is itself strong evidence of intent.
+    category: cloud_access
+    severity: critical
+    confidence: 0.70
+    techniques:
+      - id: T1530
+        name: Data from Cloud Storage
+        tactic: Collection
+    match:
+      event_type: [cloud_resource_access]
+      conditions:
+        - field: target.criticality
+          equals: critical
+
+  - id: GRF-CORR-0006
+    title: Repeated authentication failures for a single identity
+    description: >-
+      Several failed sign-ins for the same identity inside a short window. This
+      rule is stateful: a single failure produces nothing, and the finding is
+      only emitted once the threshold is crossed within the window.
+    category: authentication
+    severity: medium
+    confidence: 0.50
+    techniques:
+      - id: T1110
+        name: Brute Force
+        tactic: Credential Access
+    match:
+      event_type: [user_signin_failed]
+    threshold:
+      count: 5
+      window: 10m

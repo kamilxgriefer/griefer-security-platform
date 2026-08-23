@@ -1,7 +1,13 @@
 # Binaries
+#
+# These patterns are ANCHORED with a leading slash on purpose. An unanchored
+# "griefer-api" matches any path component with that name — including the source
+# directory cmd/griefer-api/, which is how the API's entrypoint silently failed
+# to be committed the first time.
 /bin/
 /dist/
-griefer-api
+/griefer-api
+/griefer-seed
 *.exe
 *.test
 *.out

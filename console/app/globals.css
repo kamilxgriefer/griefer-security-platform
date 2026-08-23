@@ -18,8 +18,12 @@
   --color-text-secondary: #9aa6b8;
   --color-text-muted: #6b7688;
 
-  --color-brand: #38d9c8;
-  --color-brand-dim: #17726a;
+  /* Measured from branding/source, not chosen. The console previously used a
+     slightly lighter, slightly bluer tint; two near-identical cyans in one
+     product is the thing a brand token exists to prevent. */
+  --color-brand: #1ad7ce;
+  --color-brand-bright: #1cd9d1;
+  --color-brand-dim: #12776f;
 
   --color-sev-critical: #ff5f57;
   --color-sev-high: #ff9f43;

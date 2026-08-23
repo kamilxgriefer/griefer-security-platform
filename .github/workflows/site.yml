@@ -1,0 +1,143 @@
+name: Site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "branding/**"
+      - "scripts/**"
+      - "package.json"
+      - ".github/workflows/site.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "branding/**"
+      - "scripts/**"
+      - "package.json"
+      - ".github/workflows/site.yml"
+  workflow_dispatch:
+
+# Least privilege by default. The deploy job escalates for itself and nothing
+# else does.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  verify:
+    name: Verify site and brand assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install tooling
+        run: pnpm install --frozen-lockfile
+
+      - name: Brand assets are complete and correctly shaped
+        run: pnpm verify:brand-assets
+
+      - name: Assets match the committed vectors
+        # A regeneration that changes the output means the committed assets and
+        # the masters have drifted apart, and whichever is deployed is then a
+        # coin toss.
+        run: |
+          pnpm generate:brand-assets
+          if ! git diff --quiet -- branding/generated console/public site/public; then
+            echo "::error::Regenerating brand assets changed the tree. Run pnpm generate:brand-assets and commit the result."
+            git --no-pager diff --stat -- branding/generated console/public site/public
+            exit 1
+          fi
+          echo "generated assets match the committed vectors"
+
+      - name: Site references nothing it does not ship
+        run: |
+          set -euo pipefail
+          cd site/public
+          missing=0
+          # Every local reference in the page must resolve to a file beside it.
+          for ref in $(grep -oE '(href|src)="\./[^"]+"' index.html | sed -E 's/.*"\.\/(.*)"/\1/' | sort -u); do
+            if [ ! -f "$ref" ]; then
+              echo "::error::index.html references ./$ref, which is not present"
+              missing=$((missing + 1))
+            fi
+          done
+          for ref in $(grep -oE '"\./[^"]+"' site.webmanifest | tr -d '"' | sed 's|^\./||' | sort -u); do
+            if [ ! -f "$ref" ]; then
+              echo "::error::site.webmanifest references ./$ref, which is not present"
+              missing=$((missing + 1))
+            fi
+          done
+          [ "$missing" -eq 0 ] && echo "every referenced asset is present"
+          exit "$missing"
+
+      - name: Site loads no third-party code
+        run: |
+          set -euo pipefail
+          # The page is deliberately dependency-free. A script tag, or a
+          # stylesheet, font or image pulled from another origin, would put a
+          # third party in the path of everyone who visits.
+          if grep -qE '<script' site/public/index.html; then
+            echo "::error::index.html contains a script element"
+            exit 1
+          fi
+          if grep -oE '(src|href)="https?://[^"]+"' site/public/index.html \
+             | grep -v 'href="https://github.com/'; then
+            echo "::error::index.html loads a resource from another origin"
+            exit 1
+          fi
+          echo "no scripts and no third-party resources"
+
+      - name: Site leaks no infrastructure detail
+        run: |
+          set -euo pipefail
+          if grep -RInE 'railway\.internal|postgres://|nats://|DATABASE_URL|INTERNAL_API_TOKEN|NATS_PASSWORD|DEMO_SESSION_SECRET|DEMO_PASSWORD_HASH|OPA_URL' site/public/; then
+            echo "::error::The published site contains infrastructure detail or a secret name"
+            exit 1
+          fi
+          echo "no infrastructure detail in the published site"
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/public
+
+  deploy:
+    name: Deploy to GitHub Pages
+    # main only. A pull request must never be able to change what is published
+    # at the project's public address.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      pages: write
+      # Pages deployment authenticates with a short-lived OIDC token rather
+      # than a stored secret.
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GRIEFER — Graph-based Resilient Intelligence Engine for Enforcement &amp; Response</title>
+<meta name="description" content="A verifiable, policy-governed cyber defense research and engineering platform.">
+
+<!-- Early development. Nothing here should be indexed yet. -->
+<meta name="robots" content="noindex, nofollow">
+
+<!--
+  This page is deliberately static and dependency-free: no framework, no
+  analytics, no fonts or scripts from anywhere else, no cookies. It describes
+  the project and nothing more. The platform it describes runs privately.
+-->
+
+<link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<link rel="icon" href="./favicon-32x32.png" sizes="32x32" type="image/png">
+<link rel="icon" href="./favicon-16x16.png" sizes="16x16" type="image/png">
+<link rel="icon" href="./favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png" sizes="180x180">
+<link rel="mask-icon" href="./safari-pinned-tab.svg" color="#1AD7CE">
+<link rel="manifest" href="./site.webmanifest">
+<meta name="theme-color" content="#08090C">
+<meta name="apple-mobile-web-app-title" content="GRIEFER">
+<meta name="application-name" content="GRIEFER">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="GRIEFER">
+<meta property="og:title" content="GRIEFER">
+<meta property="og:description" content="Graph-based Resilient Intelligence Engine for Enforcement &amp; Response.">
+<meta property="og:url" content="https://griefer.app/">
+<meta property="og:image" content="https://griefer.app/og-image.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="GRIEFER">
+<meta name="twitter:description" content="Graph-based Resilient Intelligence Engine for Enforcement &amp; Response.">
+<meta name="twitter:image" content="https://griefer.app/og-image.png">
+
+<style>
+  :root {
+    --field: #010104;
+    --surface: #08090c;
+    --border: #232936;
+    --cyan: #1ad7ce;
+    --cyan-dim: #12776f;
+    --text: #e7ecf3;
+    --muted: #9aa6b8;
+    --faint: #6b7688;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--field);
+    color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  main {
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 1.25rem 2rem;
+    text-align: center;
+  }
+
+  .mark { width: 132px; height: 132px; margin-bottom: 1.75rem; }
+
+  h1 {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: clamp(2rem, 9vw, 3.25rem);
+    font-weight: 700;
+    letter-spacing: 0.24em;
+    /* Letter-spacing pushes the last glyph off centre; this pulls it back. */
+    text-indent: 0.24em;
+    color: var(--cyan);
+  }
+
+  .expansion {
+    margin: 0.85rem 0 0;
+    max-width: 34rem;
+    font-size: clamp(0.95rem, 3.4vw, 1.1rem);
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .tagline {
+    margin: 1.1rem 0 0;
+    font-family: var(--mono);
+    font-size: clamp(0.8rem, 3vw, 0.95rem);
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    margin-top: 2rem;
+    padding: 0.4rem 0.9rem;
+    border: 1px solid var(--cyan-dim);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--cyan) 8%, transparent);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--cyan);
+  }
+
+  .status::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--cyan);
+  }
+
+  .notice {
+    margin-top: 2.25rem;
+    max-width: 40rem;
+    padding: 1.1rem 1.25rem;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    text-align: left;
+  }
+
+  .notice p { margin: 0; font-size: 0.9rem; color: var(--muted); }
+  .notice p + p { margin-top: 0.6rem; }
+  .notice strong { color: var(--text); font-weight: 600; }
+
+  .about {
+    margin-top: 1.75rem;
+    max-width: 40rem;
+    font-size: 0.92rem;
+    color: var(--muted);
+    text-align: left;
+  }
+
+  .about p { margin: 0 0 0.75rem; }
+  .about p:last-child { margin-bottom: 0; }
+
+  footer {
+    margin-top: 2.75rem;
+    font-size: 0.78rem;
+    color: var(--faint);
+  }
+
+  footer a { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
+  footer a:hover, footer a:focus-visible { color: var(--cyan); }
+
+  :focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; border-radius: 3px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <img class="mark" src="./griefer-mark.svg" width="132" height="132"
+       alt="GRIEFER: a shield enclosing the letter G">
+
+  <h1>GRIEFER</h1>
+  <p class="expansion">Graph-based Resilient Intelligence Engine for Enforcement &amp; Response</p>
+  <p class="tagline">See the attack. Contain the blast. Prove the defense.</p>
+
+  <p class="status">Early development</p>
+
+  <div class="notice">
+    <p><strong>Private development environment.</strong> Synthetic-data and simulation-only project.</p>
+    <p>
+      The platform is not publicly reachable. There is no public API, no public database and no
+      hosted console at this address. A public demonstration will be published later.
+    </p>
+  </div>
+
+  <div class="about">
+    <p>
+      GRIEFER is a research and engineering project exploring verifiable, policy-governed cyber
+      defense: correlating weak security signals into a single attack narrative, estimating what an
+      incident could reach, and putting every proposed response through a policy engine that records
+      its reasoning.
+    </p>
+    <p>
+      It is an early prototype rather than a product. Response actions are simulated — the platform
+      contacts no identity provider, no endpoint and no cloud service — and every scenario it ships
+      with is invented.
+    </p>
+  </div>
+
+  <footer>
+    <a href="https://github.com/kamilxgriefer/griefer-security-platform">Source on GitHub</a>
+    · Apache-2.0
+  </footer>
+</main>
+</body>
+</html>

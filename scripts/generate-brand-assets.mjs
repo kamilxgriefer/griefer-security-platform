@@ -19,6 +19,7 @@ import sharp from "sharp";
 
 import { encodeIco } from "./lib/ico.mjs";
 import { ICNS_TYPES, encodeIcns } from "./lib/icns.mjs";
+import { textSvg } from "./lib/microfont.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const VECTOR = join(ROOT, "branding", "vector");
@@ -421,13 +422,17 @@ async function contactSheet() {
     });
   }
 
+  // Labels are drawn from the micro-font rather than an SVG <text> element.
+  // "monospace" resolves to a different face on every host, which changes the
+  // pixels and therefore the file — see scripts/lib/microfont.mjs.
+  const LABEL_SCALE = 2;
   const labels = cells
     .map(([label], index) => {
       const col = index % COLS;
       const row = Math.floor(index / COLS);
       const x = PAD + col * (CELL + PAD) + CELL / 2;
-      const y = PAD + row * (CELL + 28 + PAD) + CELL + 18;
-      return `<text x="${x}" y="${y}" text-anchor="middle" font-family="monospace" font-size="13" fill="#9AA6B8">${label}</text>`;
+      const y = PAD + row * (CELL + 28 + PAD) + CELL + 10;
+      return textSvg(label, { x, y, scale: LABEL_SCALE, fill: "#9AA6B8", anchor: "middle" });
     })
     .join("");
 

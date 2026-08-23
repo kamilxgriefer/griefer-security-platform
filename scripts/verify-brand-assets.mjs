@@ -17,6 +17,7 @@ import sharp from "sharp";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const GENERATED = join(ROOT, "branding", "generated");
+const SCRIPTS = join(ROOT, "scripts");
 const WEB = join(GENERATED, "web");
 
 let failures = 0;
@@ -285,6 +286,31 @@ async function manifest() {
 
 /* ---------------------------------------------------------------------- */
 
+/**
+ * The generator must not ask the host for a font.
+ *
+ * An SVG <text> element resolves its family through fontconfig, so the same
+ * source renders different pixels on a machine with different fonts installed
+ * — which silently breaks the promise that regenerating produces identical
+ * output. This caught a real 11-byte drift between macOS and Linux in the
+ * contact sheet. Labels are drawn from scripts/lib/microfont.mjs instead.
+ *
+ * Comments are stripped before the search so that documenting the rule does
+ * not trip it.
+ */
+async function reproducibility() {
+  const sources = ["generate-brand-assets.mjs", "build-brand-svg.mjs"];
+  for (const name of sources) {
+    const path = join(SCRIPTS, name);
+    if (!existsSync(path)) continue;
+    const code = readFileSync(path, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/.*$/gm, "$1");
+    check(!/font-family/.test(code), `${name} references no font family`);
+    check(!/<text[\s>]/.test(code), `${name} emits no SVG <text>`);
+  }
+}
+
 async function main() {
   console.log("GRIEFER brand asset verification");
   await files();
@@ -293,6 +319,7 @@ async function main() {
   await maskable();
   await svg();
   await manifest();
+  await reproducibility();
 
   console.log(`\n${checks - failures}/${checks} checks passed`);
   if (failures > 0) {

@@ -22,6 +22,10 @@ type RouterOptions struct {
 	RateLimitRPS   float64
 	RateLimitBurst int
 	Logger         *slog.Logger
+	// InternalAPIToken, when set, is required on every endpoint except the
+	// liveness and readiness probes. Empty leaves the API unauthenticated,
+	// which config.Validate only permits on a loopback bind.
+	InternalAPIToken string
 }
 
 // NewRouter builds GRIEFER's HTTP handler.
@@ -36,6 +40,11 @@ type RouterOptions struct {
 //	MaxBytes     — body cap enforced before any handler reads
 //	RequireJSON  — content type checked before parsing
 //	RateLimit    — write endpoints only
+//
+// Service authentication sits inside that chain rather than outside it: a
+// rejected request should still get a request id and still appear in the access
+// log, because unauthenticated attempts are exactly what an operator wants to
+// see.
 func NewRouter(svc *Service, opts RouterOptions) http.Handler {
 	logger := opts.Logger
 	if logger == nil {
@@ -53,6 +62,9 @@ func NewRouter(svc *Service, opts RouterOptions) http.Handler {
 	mux.Handle("GET /health", svc.metrics.instrument("/health", http.HandlerFunc(svc.handleHealth)))
 	mux.Handle("GET /ready", svc.metrics.instrument("/ready", http.HandlerFunc(svc.handleReady)))
 	if opts.Registry != nil {
+		// /metrics is NOT exempt from authentication. Operational metrics
+		// describe ingest volume, incident counts and policy verdicts — enough
+		// to tell an attacker whether they have been noticed.
 		mux.Handle("GET /metrics", promhttp.HandlerFor(opts.Registry, promhttp.HandlerOpts{
 			// A scrape failure should surface in the scrape, not as a panic.
 			ErrorHandling: promhttp.ContinueOnError,
@@ -88,11 +100,20 @@ func NewRouter(svc *Service, opts RouterOptions) http.Handler {
 			"No such endpoint. See /api/v1 documentation in api/openapi.yaml.", nil)
 	}))
 
-	return httpx.Chain(mux,
+	middleware := []func(http.Handler) http.Handler{
 		httpx.Recover(logger),
 		httpx.RequestID,
 		httpx.AccessLog(logger, "/metrics", "/health"),
 		httpx.SecurityHeaders,
 		httpx.MaxBytes(maxBytes),
-	)
+	}
+	if opts.InternalAPIToken != "" {
+		// A platform must be able to probe liveness and readiness before it has
+		// any credential to present, so those two paths — and only those two —
+		// answer unauthenticated.
+		auth := httpx.NewServiceAuth(opts.InternalAPIToken, "/health", "/ready")
+		middleware = append(middleware, auth.Middleware)
+	}
+
+	return httpx.Chain(mux, middleware...)
 }

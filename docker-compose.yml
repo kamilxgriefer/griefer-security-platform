@@ -18,7 +18,7 @@ services:
       # Local development credential. It is deliberately visible: this stack is
       # for a laptop, and a value hidden in a file would only look secret.
       # Any shared deployment must supply its own via a secret manager.
-      POSTGRES_PASSWORD: griefer_local_dev
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-griefer_local_dev}
       POSTGRES_DB: griefer
       POSTGRES_INITDB_ARGS: "--data-checksums"
     ports:
@@ -35,22 +35,27 @@ services:
       - no-new-privileges:true
 
   nats:
-    image: nats:2-alpine
+    # The same image the platform runs: JetStream on, authentication required,
+    # non-root. Building it here rather than pulling the upstream image means
+    # the local stack exercises the deployed configuration — including the fact
+    # that an anonymous client is refused.
+    build:
+      context: .
+      dockerfile: deployments/railway/nats/Dockerfile
     restart: unless-stopped
-    command:
-      - "--jetstream"
-      - "--store_dir=/data"
-      - "--http_port=8222"
+    environment:
+      NATS_USER: ${NATS_USER:?NATS_USER is required, run make secrets}
+      NATS_PASSWORD: ${NATS_PASSWORD:?NATS_PASSWORD is required}
     ports:
       - "127.0.0.1:4222:4222"
       - "127.0.0.1:8222:8222"
     volumes:
       - nats-data:/data
     healthcheck:
-      # NATS's own monitoring endpoint, enabled by --http_port above.
-      # `nats-server --signal status` looks the part but needs a pid it cannot
-      # resolve as PID 1 in a container, so it reports unhealthy on a server
-      # that is running perfectly.
+      # NATS's own monitoring endpoint, enabled by http_port in nats.conf. It
+      # answers without a credential; the client port does not, which is the
+      # point. `nats-server --signal status` looks the part but needs a pid it
+      # cannot resolve as PID 1, so it reports unhealthy on a healthy server.
       test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8222/healthz"]
       interval: 5s
       timeout: 5s
@@ -60,27 +65,24 @@ services:
       - no-new-privileges:true
 
   opa:
-    image: openpolicyagent/opa:1.9.0-static
+    # Policy is baked into the image and OPA's management API is read-only. A
+    # mounted policy directory would let anything with write access to the host
+    # rewrite the rules that decide what GRIEFER may do.
+    build:
+      context: .
+      dockerfile: deployments/railway/opa/Dockerfile
     restart: unless-stopped
-    command:
-      - "run"
-      - "--server"
-      - "--addr=0.0.0.0:8181"
-      - "--log-level=info"
-      - "--set=decision_logs.console=true"
-      - "/policies"
     ports:
       - "127.0.0.1:8181:8181"
-    volumes:
-      # Read-only: the Policy Kernel's rules are not something the platform
-      # should be able to rewrite at runtime.
-      - ./policies/rego:/policies:ro
     healthcheck:
-      test: ["CMD", "/opa", "eval", "--data", "/policies", "data.griefer.response.policy_version"]
+      test: ["CMD", "/opa", "eval", "--data", "/policies/rego", "data.griefer.response.policy_version"]
       interval: 5s
       timeout: 5s
       retries: 10
       start_period: 5s
+    read_only: true
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
 
@@ -88,6 +90,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Named explicitly: a build with no target produces the LAST stage in the
+      # file, which is the test stage. Without this the API image is a Go build
+      # environment that exits immediately.
+      target: runtime
     restart: unless-stopped
     depends_on:
       postgres:
@@ -107,15 +113,25 @@ services:
       # below is bound to loopback, which is what actually limits exposure.
       GRIEFER_ALLOW_PUBLIC_BIND: "true"
       GRIEFER_STORAGE_POSTGRES: "true"
-      GRIEFER_POSTGRES_DSN: postgres://griefer:griefer_local_dev@postgres:5432/griefer?sslmode=disable
+      DATABASE_URL: postgres://griefer:${POSTGRES_PASSWORD:-griefer_local_dev}@postgres:5432/griefer?sslmode=disable
       GRIEFER_NATS_ENABLED: "true"
-      GRIEFER_NATS_URL: nats://nats:4222
+      NATS_URL: nats://nats:4222
+      NATS_USER: ${NATS_USER:?NATS_USER is required}
+      NATS_PASSWORD: ${NATS_PASSWORD:?NATS_PASSWORD is required}
       GRIEFER_NATS_STREAM: GRIEFER_EVENTS
       GRIEFER_NATS_SUBJECT: griefer.events.v1
-      GRIEFER_OPA_URL: http://opa:8181
+      OPA_URL: http://opa:8181
       GRIEFER_OPA_DECISION_PATH: griefer/response/decision
       GRIEFER_OPA_FAIL_CLOSED: "true"
-      GRIEFER_RESPONSE_MODE: simulate
+      RESPONSE_MODE: ${RESPONSE_MODE:-simulation}
+      ALLOW_REAL_ACTIONS: ${ALLOW_REAL_ACTIONS:-false}
+      SYNTHETIC_DATA_ONLY: ${SYNTHETIC_DATA_ONLY:-true}
+      # Loads the synthetic scenario into an empty deployment, before the
+      # server starts listening. A no-op once an incident exists.
+      SEED_SYNTHETIC_DEMO: ${SEED_SYNTHETIC_DEMO:-false}
+      # Every application endpoint requires this. /health and /ready do not, so
+      # the platform can probe a service before it holds any credential.
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN is required}
       GRIEFER_LOG_FORMAT: json
       GRIEFER_LOG_LEVEL: info
     ports:
@@ -143,10 +159,20 @@ services:
         condition: service_started
     environment:
       NODE_ENV: production
-      # Server-side only. The console fetches from the API in React Server
-      # Components, so no browser ever talks to the API directly and there is
-      # no CORS surface to configure.
+      APP_ENV: ${APP_ENV:-development}
+      RESPONSE_MODE: ${RESPONSE_MODE:-simulation}
+      # Server-side only. Every call to the API happens in a React Server
+      # Component or in the server-side gateway, so no browser ever talks to
+      # the API directly and there is no CORS surface to configure.
       GRIEFER_API_BASE_URL: http://api:8080
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN is required}
+      # The access gate. Without all three the console refuses every request
+      # rather than serving incident data — a gate that fails open is worse
+      # than no gate, because it looks protected.
+      DEMO_USERNAME: ${DEMO_USERNAME:-demo-admin}
+      DEMO_PASSWORD_SALT: ${DEMO_PASSWORD_SALT:?DEMO_PASSWORD_SALT is required}
+      DEMO_PASSWORD_HASH: ${DEMO_PASSWORD_HASH:?DEMO_PASSWORD_HASH is required}
+      DEMO_SESSION_SECRET: ${DEMO_SESSION_SECRET:?DEMO_SESSION_SECRET is required}
     ports:
       - "127.0.0.1:3000:3000"
     healthcheck:

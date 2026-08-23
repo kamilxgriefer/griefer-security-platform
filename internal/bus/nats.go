@@ -29,6 +29,15 @@ type NATSOptions struct {
 	ConnectTimeout time.Duration
 	// MaxAge bounds how long the stream retains events.
 	MaxAge time.Duration
+	// MaxBytes bounds the stream's on-disk size. It must leave room for every
+	// other stream on the server: JetStream refuses stream creation once the
+	// declared limits exceed the store, and the refusal names storage rather
+	// than the stream that consumed it, which makes it puzzling to diagnose.
+	MaxBytes int64
+	// User and Password authenticate to the server. Empty means the server
+	// accepts anonymous clients, which is only acceptable on loopback.
+	User     string
+	Password string
 }
 
 // NewNATSPublisher connects to NATS and ensures the stream exists.
@@ -50,15 +59,26 @@ func NewNATSPublisher(ctx context.Context, opts NATSOptions) (*NATSPublisher, er
 	if maxAge <= 0 {
 		maxAge = 72 * time.Hour
 	}
+	maxBytes := opts.MaxBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultStreamMaxBytes
+	}
 
-	conn, err := nats.Connect(opts.URL,
+	connOpts := []nats.Option{
 		nats.Name("griefer-api"),
 		nats.Timeout(connectTimeout),
 		// Reconnect quietly and indefinitely: a bus outage degrades GRIEFER,
 		// it does not end the process.
 		nats.MaxReconnects(-1),
-		nats.ReconnectWait(2*time.Second),
-	)
+		nats.ReconnectWait(2 * time.Second),
+	}
+	if opts.User != "" {
+		// Credentials are passed as options rather than embedded in the URL, so
+		// the password cannot end up in a log line that prints the URL.
+		connOpts = append(connOpts, nats.UserInfo(opts.User, opts.Password))
+	}
+
+	conn, err := nats.Connect(opts.URL, connOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("bus: connect to NATS: %w", err)
 	}
@@ -80,7 +100,7 @@ func NewNATSPublisher(ctx context.Context, opts NATSOptions) (*NATSPublisher, er
 		Storage:     jetstream.FileStorage,
 		MaxAge:      maxAge,
 		// Bound the stream so a telemetry flood cannot fill the disk.
-		MaxBytes: 1 << 30,
+		MaxBytes: maxBytes,
 		Discard:  jetstream.DiscardOld,
 	})
 	if err != nil {
@@ -90,6 +110,14 @@ func NewNATSPublisher(ctx context.Context, opts NATSOptions) (*NATSPublisher, er
 
 	return &NATSPublisher{conn: conn, js: js, subject: opts.Subject, stream: opts.Stream}, nil
 }
+
+// defaultStreamMaxBytes bounds one stream's on-disk size.
+//
+// Deliberately a fraction of a modest JetStream store rather than most of it:
+// GRIEFER's own stream should not be able to exhaust the server on its own, and
+// a deployment that adds a second stream should not have to rediscover this
+// number by hitting "insufficient storage resources available".
+const defaultStreamMaxBytes = 256 << 20
 
 // subjectWildcard widens a concrete subject to a token wildcard so that
 // per-category subjects land in the same stream.

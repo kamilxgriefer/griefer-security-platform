@@ -1,0 +1,126 @@
+#!/usr/bin/env node
+/**
+ * Generate the secrets the GRIEFER demonstration environment needs.
+ *
+ * Writes the human-facing credential to ~/.config/griefer/demo-credentials.txt
+ * with mode 600, and prints the environment-variable values to stdout so they
+ * can be pasted into the platform's secret store.
+ *
+ * The password itself is written ONLY to that file. It is never printed to
+ * stdout, so it cannot end up in a terminal scrollback that gets shared, in a
+ * CI log, or in a screenshot of this command running.
+ *
+ * Usage: node scripts/generate-demo-credentials.mjs [--print-env]
+ */
+
+import { randomBytes, scrypt as scryptCallback } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+
+const SCRYPT = { N: 32768, r: 8, p: 1, keylen: 64, maxmem: 64 * 1024 * 1024 };
+const USERNAME = "demo-admin";
+const CREDENTIALS_PATH = join(homedir(), ".config", "griefer", "demo-credentials.txt");
+
+function scrypt(password, salt, keylen, options) {
+  return new Promise((resolve, reject) => {
+    scryptCallback(password, salt, keylen, options, (err, derived) =>
+      err ? reject(err) : resolve(derived),
+    );
+  });
+}
+
+/**
+ * A passphrase from a word list rather than a random character string.
+ *
+ * Someone has to read this out of a file and type it into a login form. A
+ * password that invites a copy-paste into a chat window is a worse password
+ * than a slightly longer one that can be typed.
+ */
+const WORDS = [
+  "amber", "anchor", "basalt", "beacon", "cinder", "cobalt", "dagger", "delta",
+  "ember", "falcon", "granite", "harbor", "indigo", "javelin", "kestrel", "lantern",
+  "marble", "nickel", "onyx", "pewter", "quartz", "raven", "saffron", "talon",
+  "umber", "vector", "walnut", "xenon", "yarrow", "zephyr", "bastion", "citadel",
+];
+
+function passphrase(words = 5) {
+  const chosen = [];
+  for (let i = 0; i < words; i += 1) {
+    // rejection-free selection: WORDS.length is 32, a clean power of two, so a
+    // 5-bit draw is uniform.
+    chosen.push(WORDS[randomBytes(1)[0] % WORDS.length]);
+  }
+  // A digit group so the result satisfies policies that demand one.
+  return `${chosen.join("-")}-${randomBytes(2).readUInt16BE(0)}`;
+}
+
+async function main() {
+  const password = passphrase();
+  const salt = randomBytes(16).toString("hex");
+  const hash = (await scrypt(password, Buffer.from(salt, "hex"), SCRYPT.keylen, SCRYPT)).toString("hex");
+
+  const sessionSecret = randomBytes(48).toString("base64url");
+  const internalToken = randomBytes(48).toString("base64url");
+  const natsPassword = randomBytes(32).toString("base64url");
+
+  mkdirSync(dirname(CREDENTIALS_PATH), { recursive: true, mode: 0o700 });
+
+  // Preserve a URL already recorded by a previous run, so re-generating the
+  // password does not lose the deployment address.
+  let existingUrl = "to be filled in after deployment";
+  if (existsSync(CREDENTIALS_PATH)) {
+    const previous = readFileSync(CREDENTIALS_PATH, "utf8");
+    const match = previous.match(/^GRIEFER demo URL:\s*(.+)$/m);
+    if (match?.[1] && !match[1].startsWith("to be filled")) existingUrl = match[1].trim();
+  }
+
+  writeFileSync(
+    CREDENTIALS_PATH,
+    [
+      `GRIEFER demo URL: ${existingUrl}`,
+      `Username: ${USERNAME}`,
+      `Password: ${password}`,
+      "",
+      "This file holds the demonstration login only.",
+      "It deliberately contains no platform token, no database connection string,",
+      "no session secret and no service credential.",
+      "",
+      `Generated: ${new Date().toISOString()}`,
+      "",
+    ].join("\n"),
+    { mode: 0o600 },
+  );
+  chmodSync(CREDENTIALS_PATH, 0o600);
+
+  // stdout carries the values that go into the platform's secret store. The
+  // password is not among them — only its salt and hash, which are useless
+  // without the work factor of a scrypt derivation.
+  process.stdout.write(
+    [
+      "# Console service",
+      `DEMO_USERNAME=${USERNAME}`,
+      `DEMO_PASSWORD_SALT=${salt}`,
+      `DEMO_PASSWORD_HASH=${hash}`,
+      `DEMO_SESSION_SECRET=${sessionSecret}`,
+      "",
+      "# Console and API — must be identical in both",
+      `INTERNAL_API_TOKEN=${internalToken}`,
+      "",
+      "# API and NATS — must be identical in both",
+      "NATS_USER=griefer",
+      `NATS_PASSWORD=${natsPassword}`,
+      "",
+      `# The login password was written to ${CREDENTIALS_PATH} (mode 600).`,
+      "# It is not printed here on purpose.",
+      "",
+    ].join("\n"),
+  );
+
+  process.stderr.write(`\nDemonstration password written to ${CREDENTIALS_PATH}\n`);
+}
+
+main().catch((error) => {
+  process.stderr.write(`failed to generate credentials: ${error.message}\n`);
+  process.exit(1);
+});

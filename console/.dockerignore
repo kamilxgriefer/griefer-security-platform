@@ -1,0 +1,26 @@
+# Keep the build context small and keep host state out of images.
+
+.git
+.gitignore
+
+# Local secrets — never into a build layer.
+.env
+.env.*
+!.env.example
+*.local
+
+# Host-built dependencies and output. node_modules holds platform-native
+# binaries that would be wrong inside a Linux image; the deps stage installs
+# them for the target platform instead.
+node_modules
+.next
+out
+coverage
+
+# Test-only material the runtime image has no use for.
+__tests__
+vitest.config.ts
+vitest.setup.ts
+eslint.config.mjs
+Dockerfile
+.dockerignore

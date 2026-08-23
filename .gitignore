@@ -29,6 +29,8 @@ out/
 .env
 .env.*
 !.env.example
+*.local
+.secrets/
 *.pem
 *.key
 *.p12

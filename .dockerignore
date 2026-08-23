@@ -1,0 +1,34 @@
+# Keep the build context small and keep host state out of images.
+
+.git
+.github
+.gitignore
+.gitleaks.toml
+.golangci.yml
+.editorconfig
+
+# Local secrets. These must never enter a build context: anything copied into a
+# layer is recoverable from the image, even if a later layer deletes it.
+.env
+.env.*
+!.env.example
+*.local
+.secrets/
+.local/
+
+# Build output and host-specific dependencies. node_modules in particular holds
+# platform-native binaries that would be wrong inside a Linux image.
+bin/
+dist/
+console/node_modules/
+console/.next/
+node_modules/
+coverage.out
+coverage.html
+*.test
+*.out
+
+# Documentation and developer tooling the runtime does not need.
+docs/
+*.md
+!fixtures/synthetic/README.md

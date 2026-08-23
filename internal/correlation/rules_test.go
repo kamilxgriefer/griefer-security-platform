@@ -144,12 +144,12 @@ rules:
 			wantErr: "at least 2",
 		},
 		{
-			name: "unknown yaml key is a typo, not an extension point",
+			name: "an unknown yaml key is a typo, not an extension point",
 			yaml: `version: "0.1"
 rules:
   - id: R1
     title: t
-    catagory: authentication
+    categorie: authentication
     severity: medium
     confidence: 0.5
     match:

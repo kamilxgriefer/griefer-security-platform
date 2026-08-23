@@ -1,0 +1,93 @@
+name: Bug report
+description: Something behaves incorrectly
+title: "bug: "
+labels: ["type:bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **If this is a security vulnerability, stop.** Do not file it here.
+        Report it privately: [Security Advisories](https://github.com/kamilxgriefer/griefer-security-platform/security/advisories/new).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What GRIEFER did, and what you expected instead.
+      placeholder: |
+        Expected: an event with a future timestamp is rejected.
+        Actual: it was accepted and correlated into an incident.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: >-
+        Exact steps. A curl command or a test case is worth more than a
+        description. Use synthetic data only — never paste real telemetry.
+      placeholder: |
+        1. make up
+        2. curl -X POST http://localhost:8080/api/v1/events -d '...'
+        3. curl http://localhost:8080/api/v1/incidents
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Ingestion / event schema
+        - Correlation / detection rules
+        - Risk scoring / blast radius
+        - Policy Kernel
+        - Audit trail
+        - API
+        - Console
+        - Storage
+        - Build / Docker / CI
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: safety
+    attributes:
+      label: Does this affect a safety guarantee?
+      description: >-
+        See docs/SAFETY_MODEL.md. Anything that would let GRIEFER act when it
+        should not — or refuse to record when it should — is high priority.
+      options:
+        - "No"
+        - "Yes — GRIEFER could act when policy should have stopped it"
+        - "Yes — telemetry was not recorded when it should have been"
+        - "Yes — a decision was not audited"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      value: |
+        - GRIEFER version or commit:
+        - How it is running: (docker compose / native / tests)
+        - OS:
+        - Go version (if building):
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and request id
+      description: >-
+        GRIEFER logs are structured. The `request_id` from an error response ties
+        it to a server log line. Redact anything sensitive.
+      render: shell

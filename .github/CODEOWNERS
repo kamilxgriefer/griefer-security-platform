@@ -1,0 +1,29 @@
+# Default owner for everything.
+*                           @kamilxgriefer
+
+# Safety-critical paths. These define what GRIEFER is permitted to do; a change
+# here needs review even when the diff looks trivial.
+/policies/                  @kamilxgriefer
+/internal/policy/           @kamilxgriefer
+/internal/incidents/catalog.go  @kamilxgriefer
+/docs/SAFETY_MODEL.md       @kamilxgriefer
+/docs/THREAT_MODEL.md       @kamilxgriefer
+/docs/adr/                  @kamilxgriefer
+
+# The trust boundary.
+/schemas/                   @kamilxgriefer
+/internal/events/           @kamilxgriefer
+
+# The record.
+/internal/audit/            @kamilxgriefer
+/internal/storage/schema.sql @kamilxgriefer
+
+# Supply chain and CI.
+/.github/workflows/         @kamilxgriefer
+/Dockerfile                 @kamilxgriefer
+/console/Dockerfile         @kamilxgriefer
+/docker-compose.yml         @kamilxgriefer
+/go.mod                     @kamilxgriefer
+/go.sum                     @kamilxgriefer
+/console/package.json       @kamilxgriefer
+/console/pnpm-lock.yaml     @kamilxgriefer

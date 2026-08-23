@@ -1,0 +1,340 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege by default. A job that needs more requests it explicitly.
+permissions:
+  contents: read
+
+# Cancel superseded runs on a branch. main is excluded: a push to main should
+# always produce a complete result, even if another lands behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  GO_VERSION: "1.25"
+  NODE_VERSION: "22"
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: griefer
+          POSTGRES_PASSWORD: griefer_ci
+          POSTGRES_DB: griefer_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U griefer -d griefer_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      nats:
+        image: nats:2-alpine
+        ports:
+          - 4222:4222
+        # The image ships no shell, so the readiness gate is a TCP probe in the
+        # workflow below rather than a container health check.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          # Module and build caches are keyed on go.sum, so a dependency change
+          # invalidates them. Caching a compiler cache is safe; caching build
+          # output across dependency changes is not.
+          cache-dependency-path: go.sum
+
+      - name: Verify module integrity
+        run: |
+          go mod verify
+          go mod download
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l . | grep -v '^console/' || true)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Set up OPA
+        uses: open-policy-agent/setup-opa@v2
+        with:
+          version: latest
+
+      - name: Check Rego formatting
+        run: opa fmt --fail policies/rego
+
+      - name: Type-check the policy
+        run: opa check policies/rego
+
+      - name: Policy unit tests
+        run: opa test policies/rego -v
+
+      - name: Start OPA
+        run: |
+          opa run --server --addr 127.0.0.1:8181 policies/rego &
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8181/health >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8181/health
+
+      - name: Wait for NATS
+        run: |
+          for _ in $(seq 1 30); do
+            (echo > /dev/tcp/127.0.0.1/4222) >/dev/null 2>&1 && break
+            sleep 1
+          done
+          (echo > /dev/tcp/127.0.0.1/4222) >/dev/null 2>&1
+
+      - name: Tests
+        env:
+          GRIEFER_TEST_POSTGRES_DSN: postgres://griefer:griefer_ci@127.0.0.1:5432/griefer_test?sslmode=disable
+          GRIEFER_TEST_NATS_URL: nats://127.0.0.1:4222
+          GRIEFER_TEST_OPA_URL: http://127.0.0.1:8181
+        run: go test -race -count=1 -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Coverage summary
+        run: |
+          go tool cover -func=coverage.out | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Build
+        run: |
+          CGO_ENABLED=0 go build -trimpath -o /tmp/griefer-api ./cmd/griefer-api
+          CGO_ENABLED=0 go build -trimpath -o /tmp/griefer-seed ./cmd/griefer-seed
+
+      - name: Smoke test the built binary
+        run: |
+          /tmp/griefer-api -print-config
+          GRIEFER_HTTP_ADDR=127.0.0.1:18080 /tmp/griefer-api &
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:18080/ready >/dev/null && break
+            sleep 1
+          done
+          # The demo must survive a real end-to-end replay, or the README lies.
+          /tmp/griefer-seed -api http://127.0.0.1:18080
+          curl -sf 'http://127.0.0.1:18080/api/v1/incidents?limit=1' | grep -q '"risk_score"'
+
+  golangci:
+    name: Lint (Go)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  console:
+    name: Console
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type-check
+        run: pnpm typecheck
+
+      - name: Tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  schemas:
+    name: Schemas and detection content
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install validators
+        run: pip install --quiet openapi-spec-validator pyyaml jsonschema
+
+      - name: Validate the OpenAPI document
+        run: |
+          python - <<'PY'
+          from openapi_spec_validator import validate
+          from openapi_spec_validator.readers import read_from_filename
+          spec, _ = read_from_filename("api/openapi.yaml")
+          validate(spec)
+          print(f"OpenAPI valid: {len(spec['paths'])} paths, "
+                f"{len(spec['components']['schemas'])} schemas")
+          PY
+
+      - name: Validate JSON Schemas
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          from jsonschema import Draft202012Validator
+          for path in sorted(pathlib.Path("schemas").rglob("*.json")):
+              schema = json.loads(path.read_text())
+              Draft202012Validator.check_schema(schema)
+              print(f"valid: {path}")
+          PY
+
+      - name: Validate YAML and check for duplicate keys
+        run: |
+          python - <<'PY'
+          import pathlib, sys, yaml
+
+          class Strict(yaml.SafeLoader):
+              pass
+
+          def no_duplicates(loader, node, deep=False):
+              seen = {}
+              for key_node, value_node in node.value:
+                  key = loader.construct_object(key_node, deep=deep)
+                  if key in seen:
+                      raise ValueError(
+                          f"duplicate key {key!r} at line {key_node.start_mark.line + 1}")
+                  seen[key] = loader.construct_object(value_node, deep=deep)
+              return seen
+
+          Strict.add_constructor(
+              yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_duplicates)
+
+          failed = False
+          for path in sorted(pathlib.Path(".").rglob("*.y*ml")):
+              if any(part in {"node_modules", ".next", ".git"} for part in path.parts):
+                  continue
+              try:
+                  yaml.load(path.read_text(), Loader=Strict)
+                  print(f"valid: {path}")
+              except Exception as exc:
+                  print(f"::error file={path}::{exc}")
+                  failed = True
+          sys.exit(1 if failed else 0)
+          PY
+
+  containers:
+    name: Container images
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: griefer-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build the console image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./console
+          file: ./console/Dockerfile
+          push: false
+          load: true
+          tags: griefer-console:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify the API image runs as a non-root user
+        run: |
+          user="$(docker run --rm --entrypoint="" griefer-api:ci /app/griefer-api -print-config >/dev/null 2>&1; docker inspect -f '{{.Config.User}}' griefer-api:ci)"
+          echo "image user: ${user}"
+          if [ "${user}" = "root" ] || [ -z "${user}" ]; then
+            echo "::error::The API image must not run as root"
+            exit 1
+          fi
+
+      - name: Validate the Compose stack
+        run: docker compose -f docker-compose.yml config -q && echo "docker-compose.yml is valid"
+
+  compose-e2e:
+    name: Compose end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+
+      - name: Start the stack
+        run: |
+          cp .env.example .env
+          docker compose up -d --build postgres nats opa api
+
+      - name: Wait for the API
+        run: |
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8080/ready >/dev/null && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:8080/ready | tee /dev/stderr | grep -q '"status":"ready"'
+
+      - name: Replay the demonstration scenario
+        run: go run ./cmd/griefer-seed -api http://127.0.0.1:8080
+
+      - name: Assert the documented outcome and policy verdicts
+        run: python3 scripts/verify-demo.py http://127.0.0.1:8080
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

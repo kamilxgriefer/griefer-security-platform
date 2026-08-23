@@ -101,7 +101,12 @@ func (k *RemoteKernel) Health(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("policy: OPA health request failed: %w", err)
 	}
-	defer drainAndClose(resp.Body)
+	defer func() {
+		// Drain before closing so the connection can be reused rather than
+		// torn down after every probe.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxPolicyResponseBytes))
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("policy: OPA health returned status %d", resp.StatusCode)
 	}
@@ -141,7 +146,10 @@ func (k *RemoteKernel) evaluate(ctx context.Context, in Input) (incidents.Policy
 	if err != nil {
 		return incidents.PolicyDecision{}, fmt.Errorf("policy request failed: %w", err)
 	}
-	defer drainAndClose(resp.Body)
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxPolicyResponseBytes))
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return incidents.PolicyDecision{}, fmt.Errorf("policy endpoint returned status %d", resp.StatusCode)
@@ -170,10 +178,4 @@ func (k *RemoteKernel) evaluate(ctx context.Context, in Input) (incidents.Policy
 			envelope.Result.Effect, len(envelope.Result.Reasons))
 	}
 	return decision, nil
-}
-
-// drainAndClose releases an HTTP body so the connection can be reused.
-func drainAndClose(body io.ReadCloser) {
-	_, _ = io.Copy(io.Discard, io.LimitReader(body, maxPolicyResponseBytes))
-	_ = body.Close()
 }

@@ -1,0 +1,234 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, so a newly disclosed vulnerability in a pinned dependency surfaces
+    # without waiting for someone to open a pull request.
+    - cron: "23 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  dependencies:
+    name: Dependency vulnerabilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: go.sum
+
+      - name: govulncheck
+        # Blocking. A known-exploitable path in a dependency is not advisory.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+
+      - name: pnpm audit
+        working-directory: console
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm audit --audit-level high
+
+  secrets:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks needs history to scan commits, not just the working tree.
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  filesystem:
+    name: Filesystem scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: Trivy configuration scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          format: table
+
+  images:
+    name: Image scan and SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      # Uploading SARIF to the Security tab needs this and nothing more.
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: griefer-api:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build the console image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./console
+          push: false
+          load: true
+          tags: griefer-console:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan the API image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: griefer-api:scan
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: Scan the console image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: griefer-console:scan
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: SBOM — API image
+        uses: anchore/sbom-action@v0
+        with:
+          image: griefer-api:scan
+          format: spdx-json
+          artifact-name: griefer-api.spdx.json
+          output-file: griefer-api.spdx.json
+
+      - name: SBOM — console image
+        uses: anchore/sbom-action@v0
+        with:
+          image: griefer-console:scan
+          format: spdx-json
+          artifact-name: griefer-console.spdx.json
+          output-file: griefer-console.spdx.json
+
+      - name: Publish SBOMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: "*.spdx.json"
+          retention-days: 90
+
+  policy-invariants:
+    name: Policy invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up OPA
+        uses: open-policy-agent/setup-opa@v2
+        with:
+          version: latest
+
+      - name: Policy unit tests
+        run: opa test policies/rego -v
+
+      - name: Assert the policy still denies what it must
+        # A second, independent check on the rules that must never regress, run
+        # against the policy source rather than through the platform. If the Go
+        # side and the Rego side ever disagree, this catches it.
+        run: |
+          set -euo pipefail
+          assert_effect() {
+            local name="$1" expected="$2" input="$3"
+            local actual
+            actual="$(echo "$input" > /tmp/policy-input.json && \
+              opa eval -d policies/rego -i /tmp/policy-input.json \
+                'data.griefer.response.decision.effect' --format=raw | tr -d '"')"
+            printf '  %-46s %-16s' "$name" "$actual"
+            if [ "$actual" != "$expected" ]; then
+              printf 'FAIL (expected %s)\n' "$expected"
+              return 1
+            fi
+            printf 'ok\n'
+          }
+
+          base_action='"mode":"simulate","known":true,"reversible":true,"rollback_action":"r","targets_critical_asset":false,"isolation":false'
+          strong_incident='"risk_score":81,"evidence_categories":["a","b","c"]'
+
+          assert_effect "destructive action" deny \
+            "{\"action\":{\"type\":\"wipe_endpoint\",\"destructive\":true,${base_action},\"reversible\":false},\"incident\":{${strong_incident}},\"request\":{\"automated\":false}}"
+
+          assert_effect "action outside the catalog" deny \
+            "{\"action\":{\"type\":\"unknown\",\"destructive\":false,${base_action},\"known\":false},\"incident\":{${strong_incident}},\"request\":{\"automated\":true}}"
+
+          assert_effect "malformed input" deny \
+            '{"action":{"type":"require_mfa"}}'
+
+          assert_effect "empty input" deny '{}'
+
+          assert_effect "irreversible action" require_approval \
+            "{\"action\":{\"type\":\"revoke_sessions\",\"destructive\":false,${base_action},\"reversible\":false,\"rollback_action\":\"\"},\"incident\":{${strong_incident}},\"request\":{\"automated\":true}}"
+
+          assert_effect "critical asset" require_approval \
+            "{\"action\":{\"type\":\"require_mfa\",\"destructive\":false,${base_action},\"targets_critical_asset\":true},\"incident\":{${strong_incident}},\"request\":{\"automated\":true}}"
+
+          assert_effect "single weak signal, isolation" require_approval \
+            "{\"action\":{\"type\":\"isolate_endpoint\",\"destructive\":false,${base_action},\"isolation\":true},\"incident\":{\"risk_score\":11,\"evidence_categories\":[\"a\"]},\"request\":{\"automated\":true}}"
+
+          assert_effect "execute mode" require_approval \
+            "{\"action\":{\"type\":\"require_mfa\",\"destructive\":false,${base_action},\"mode\":\"execute\"},\"incident\":{${strong_incident}},\"request\":{\"automated\":false}}"
+
+          assert_effect "corroborated simulation" allow \
+            "{\"action\":{\"type\":\"preserve_evidence\",\"destructive\":false,${base_action}},\"incident\":{${strong_incident}},\"request\":{\"automated\":true}}"
+
+          echo "All policy invariants hold."

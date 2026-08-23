@@ -61,12 +61,13 @@ const (
 	CategoryAuthentication      Category = "authentication"
 	CategorySessionAnomaly      Category = "session_anomaly"
 	CategoryPrivilegeEscalation Category = "privilege_escalation"
-	CategoryCredentialAccess    Category = "credential_access"
-	CategoryCloudAccess         Category = "cloud_access"
-	CategoryDataAccess          Category = "data_access"
-	CategoryProcessExecution    Category = "process_execution"
-	CategoryNetworkActivity     Category = "network_activity"
-	CategoryConfigChange        Category = "configuration_change"
+	// #nosec G101 -- this names an evidence category, not a credential.
+	CategoryCredentialAccess Category = "credential_access"
+	CategoryCloudAccess      Category = "cloud_access"
+	CategoryDataAccess       Category = "data_access"
+	CategoryProcessExecution Category = "process_execution"
+	CategoryNetworkActivity  Category = "network_activity"
+	CategoryConfigChange     Category = "configuration_change"
 )
 
 // Actor is the principal that performed the activity.

@@ -1,0 +1,73 @@
+name: Detection content
+description: Propose a new detection rule or a change to an existing one
+title: "detect: "
+labels: ["type:feature", "area:detection"]
+body:
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: What behaviour should this detect?
+      description: >-
+        Describe it at the level needed to explain the detection. Do not include
+        exploit code, tooling or operational tradecraft — see the responsible-use
+        section of docs/ATTACK_SCENARIOS.md.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Evidence category
+      description: >-
+        SAFETY-RELEVANT. The Policy Kernel counts distinct categories when
+        deciding whether automation is permitted, so this determines what
+        GRIEFER may do without a human.
+      options:
+        - authentication
+        - session_anomaly
+        - privilege_escalation
+        - credential_access
+        - cloud_access
+        - data_access
+        - process_execution
+        - network_activity
+        - configuration_change
+        - A new category is needed (requires an ADR)
+    validations:
+      required: true
+
+  - type: textarea
+    id: false-positives
+    attributes:
+      label: When does this fire legitimately?
+      description: >-
+        Required. A rule with no stated false positives has not been thought
+        about, and will be closed until it has.
+      placeholder: |
+        - Scheduled access reviews
+        - Automated provisioning from an HR system
+    validations:
+      required: true
+
+  - type: input
+    id: technique
+    attributes:
+      label: ATT&CK technique
+      placeholder: "T1098 — Account Manipulation"
+
+  - type: dropdown
+    id: confidence
+    attributes:
+      label: How strong is this signal on its own?
+      options:
+        - "Weak — needs corroboration to mean anything (0.3–0.5)"
+        - "Moderate — suspicious but explainable (0.5–0.7)"
+        - "Strong — rarely legitimate (0.7–0.9)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: telemetry
+    attributes:
+      label: What telemetry does it need?
+      description: Which source type, and which fields.

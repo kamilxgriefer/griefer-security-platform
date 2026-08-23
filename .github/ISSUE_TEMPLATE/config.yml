@@ -1,0 +1,10 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/kamilxgriefer/griefer-security-platform/security/advisories/new
+    about: >-
+      Please do NOT open a public issue for a security problem. Report it
+      privately through GitHub Security Advisories.
+  - name: Ask a question or discuss an idea
+    url: https://github.com/kamilxgriefer/griefer-security-platform/discussions
+    about: For questions, design discussion and anything not yet a concrete change.

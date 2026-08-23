@@ -1,0 +1,71 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    # Security
+    - gosec
+    - bodyclose      # an unclosed response body leaks a connection
+    - noctx          # an HTTP request without a context cannot be cancelled or bounded
+    - rowserrcheck
+    - sqlclosecheck
+
+    # Correctness
+    - errorlint      # %w and errors.Is/As, so error identity survives wrapping
+    - nilerr
+    - copyloopvar
+    - durationcheck
+    - makezero
+    - contextcheck
+
+    # Clarity
+    - unconvert
+    - misspell
+    - whitespace
+    - usestdlibvars
+
+  settings:
+    gosec:
+      excludes:
+        # Integer conversion overflow. Noisy on deliberate, already-bounded
+        # casts; the bounds are enforced by config validation and by the schema.
+        - G115
+    errcheck:
+      check-type-assertions: true
+    govet:
+      enable-all: true
+      disable:
+        # Readability of a domain struct beats a few bytes of padding.
+        - fieldalignment
+        # `if err := f(); err != nil` inside a closure shadows an outer err by
+        # design, and that is idiomatic Go. The check flags 20 such cases here
+        # and no real bugs, so it costs attention without buying safety.
+        - shadow
+    misspell:
+      # No locale is set on purpose. Go identifiers use US spelling by
+      # convention (Normalize, Sanitize); prose in docs/ uses UK spelling.
+      # Pinning either one turns a house style into 40 false positives.
+      ignore-rules:
+        - "analyse"
+        - "behaviour"
+        - "recognised"
+
+  exclusions:
+    generated: lax
+    rules:
+      # Tests legitimately do things production code must not: build requests
+      # without a context, ignore response bodies on a recorder, and construct
+      # deliberately malformed input.
+      - path: _test\.go$
+        linters:
+          - gosec
+          - noctx
+          - bodyclose
+          - contextcheck
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

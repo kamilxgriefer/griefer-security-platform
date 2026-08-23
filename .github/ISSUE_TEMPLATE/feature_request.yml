@@ -1,0 +1,67 @@
+name: Feature request
+description: Propose a capability or a change in direction
+title: "feat: "
+labels: ["type:feature"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >-
+        What can you not do today? Describe the situation, not the solution —
+        the best fix is often not the one first imagined.
+      placeholder: >-
+        When an incident spans two identities that share a device, GRIEFER
+        creates two unrelated incidents and an analyst has to notice the link
+        manually.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: If you already have a shape in mind, describe it.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: milestone
+    attributes:
+      label: Which milestone does this belong to?
+      description: See docs/ROADMAP.md.
+      options:
+        - M2 — Correlation and Security Graph
+        - M3 — Policy-governed response
+        - M4 — Identity integration and tamper-evident audit
+        - M5 — Endpoint telemetry
+        - M6 — Continuous defense validation
+        - M7 — AI-assisted investigation
+        - M8 — Production hardening
+        - Not sure
+        - None of these
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety impact
+      description: >-
+        Tick anything that applies. Any of these needs an ADR before
+        implementation — see docs/adr/README.md.
+      options:
+        - label: Would let GRIEFER take an action it cannot take today
+        - label: Would change what evidence justifies an automated action
+        - label: Would add a new evidence category
+        - label: Would change a trust boundary
+        - label: Would introduce a component that can reach an actuator
+        - label: None of the above
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: >-
+        Including "do nothing". Knowing what was rejected and why is often the
+        most useful part of a proposal.

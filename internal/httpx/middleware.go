@@ -90,6 +90,10 @@ func SecurityHeaders(next http.Handler) http.Handler {
 func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// nolint:contextcheck // The deferred closure does carry the request
+			// context — through r, which every call below reads it from. It
+			// takes no ctx parameter of its own because a recover() handler
+			// must run on the deferring goroutine.
 			defer func() {
 				if rec := recover(); rec != nil {
 					if errors.Is(errFromRecover(rec), http.ErrAbortHandler) {

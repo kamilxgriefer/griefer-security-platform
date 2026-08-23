@@ -3,6 +3,7 @@ package events
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -95,7 +96,9 @@ func (v *Validator) Validate(raw []byte) error {
 	}
 	if err := v.schema.Validate(inst); err != nil {
 		var verr *jsonschema.ValidationError
-		if ok := asValidationError(err, &verr); ok {
+		// errors.As rather than a type assertion, so a future wrapped error
+		// still produces field-level detail instead of an opaque failure.
+		if errors.As(err, &verr) {
 			return toValidationError(verr)
 		}
 		return &ValidationError{Errors: []FieldError{{
@@ -125,14 +128,6 @@ func (v *Validator) Decode(raw []byte) (*SecurityEvent, error) {
 		}}}
 	}
 	return &ev, nil
-}
-
-func asValidationError(err error, target **jsonschema.ValidationError) bool {
-	if ve, ok := err.(*jsonschema.ValidationError); ok {
-		*target = ve
-		return true
-	}
-	return false
 }
 
 // toValidationError flattens the schema library's error tree into a bounded,

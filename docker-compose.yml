@@ -1,0 +1,165 @@
+# GRIEFER local stack.
+#
+#   make up      start everything
+#   make demo    replay the synthetic scenario
+#   make down    stop and remove volumes
+#
+# Every port is published to 127.0.0.1 only. GRIEFER v0.1 has no
+# authentication, so nothing here may be reachable from the network.
+
+name: griefer
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: griefer
+      # Local development credential. It is deliberately visible: this stack is
+      # for a laptop, and a value hidden in a file would only look secret.
+      # Any shared deployment must supply its own via a secret manager.
+      POSTGRES_PASSWORD: griefer_local_dev
+      POSTGRES_DB: griefer
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U griefer -d griefer"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  nats:
+    image: nats:2-alpine
+    restart: unless-stopped
+    command:
+      - "--jetstream"
+      - "--store_dir=/data"
+      - "--http_port=8222"
+    ports:
+      - "127.0.0.1:4222:4222"
+      - "127.0.0.1:8222:8222"
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      # NATS ships no shell tools in the alpine image, so the monitoring
+      # endpoint is probed with the server's own binary.
+      test: ["CMD", "nats-server", "--signal", "status"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+
+  opa:
+    image: openpolicyagent/opa:1.9.0-static
+    restart: unless-stopped
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "--log-level=info"
+      - "--set=decision_logs.console=true"
+      - "/policies"
+    ports:
+      - "127.0.0.1:8181:8181"
+    volumes:
+      # Read-only: the Policy Kernel's rules are not something the platform
+      # should be able to rewrite at runtime.
+      - ./policies/rego:/policies:ro
+    healthcheck:
+      test: ["CMD", "/opa", "eval", "--data", "/policies", "data.griefer.response.policy_version"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+    environment:
+      GRIEFER_ENV: local
+      GRIEFER_HTTP_ADDR: 0.0.0.0:8080
+      # The container's own interface is not the host's. The published port
+      # below is bound to loopback, which is what actually limits exposure.
+      GRIEFER_ALLOW_PUBLIC_BIND: "true"
+      GRIEFER_STORAGE_POSTGRES: "true"
+      GRIEFER_POSTGRES_DSN: postgres://griefer:griefer_local_dev@postgres:5432/griefer?sslmode=disable
+      GRIEFER_NATS_ENABLED: "true"
+      GRIEFER_NATS_URL: nats://nats:4222
+      GRIEFER_NATS_STREAM: GRIEFER_EVENTS
+      GRIEFER_NATS_SUBJECT: griefer.events.v1
+      GRIEFER_OPA_URL: http://opa:8181
+      GRIEFER_OPA_DECISION_PATH: griefer/response/decision
+      GRIEFER_OPA_FAIL_CLOSED: "true"
+      GRIEFER_RESPONSE_MODE: simulate
+      GRIEFER_LOG_FORMAT: json
+      GRIEFER_LOG_LEVEL: info
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      # The image has no shell and no curl; the binary answers its own probe.
+      test: ["CMD", "/app/griefer-api", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  console:
+    build:
+      context: ./console
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      # Server-side only. The console fetches from the API in React Server
+      # Components, so no browser ever talks to the API directly and there is
+      # no CORS surface to configure.
+      GRIEFER_API_BASE_URL: http://api:8080
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      # The Next.js image has node but no curl.
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  postgres-data:
+  nats-data:

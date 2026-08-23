@@ -225,7 +225,12 @@ type ReachableEntity struct {
 	Name        string      `json:"name,omitempty"`
 	Criticality Criticality `json:"criticality"`
 	Hops        int         `json:"hops"`
-	Via         Relation    `json:"via,omitempty"`
+	// Via names the relationship the node was reached through, and From names
+	// the entity it was reached from. Together they let a consumer redraw the
+	// actual path rather than inferring one: a picture that invents edges is
+	// worse than no picture.
+	Via  Relation `json:"via,omitempty"`
+	From string   `json:"from,omitempty"`
 }
 
 // BlastRadius is an estimate of what an incident could reach.
@@ -255,6 +260,7 @@ func (g *Graph) EstimateBlastRadius(seeds []string, maxHops int) BlastRadius {
 		id   string
 		hops int
 		via  Relation
+		from string
 	}
 
 	visited := make(map[string]int, len(seeds))
@@ -304,6 +310,7 @@ func (g *Graph) EstimateBlastRadius(seeds []string, maxHops int) BlastRadius {
 			Criticality: ent.Criticality,
 			Hops:        cur.hops,
 			Via:         cur.via,
+			From:        cur.from,
 		})
 
 		if cur.hops >= maxHops {
@@ -315,7 +322,9 @@ func (g *Graph) EstimateBlastRadius(seeds []string, maxHops int) BlastRadius {
 				continue
 			}
 			visited[step.id] = cur.hops + 1
-			queue = append(queue, queued{id: step.id, hops: cur.hops + 1, via: step.relation})
+			queue = append(queue, queued{
+				id: step.id, hops: cur.hops + 1, via: step.relation, from: cur.id,
+			})
 		}
 	}
 

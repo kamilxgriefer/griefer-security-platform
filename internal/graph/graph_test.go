@@ -170,9 +170,36 @@ func TestEstimateBlastRadius(t *testing.T) {
 		if got.Summary == "" {
 			t.Error("Summary is empty; the number needs a sentence an analyst can read")
 		}
+		byID := map[string]graph.ReachableEntity{}
 		for _, r := range got.Reachable {
-			if r.ID == "cloud_resource:bucket-1" && r.Hops != 3 {
-				t.Errorf("bucket hops = %d, want 3", r.Hops)
+			byID[r.ID] = r
+		}
+		bucket, ok := byID["cloud_resource:bucket-1"]
+		if !ok {
+			t.Fatal("the bucket the secret unlocks was not reached")
+		}
+		if bucket.Hops != 3 {
+			t.Errorf("bucket hops = %d, want 3", bucket.Hops)
+		}
+		// Provenance must describe a real path, so a consumer can redraw it
+		// rather than inventing edges.
+		if bucket.From != "secret:sec-1" {
+			t.Errorf("bucket reached From = %q, want secret:sec-1", bucket.From)
+		}
+		if bucket.Via != graph.RelGrantsAccessTo {
+			t.Errorf("bucket reached Via = %q, want grants_access_to", bucket.Via)
+		}
+		for _, r := range got.Reachable {
+			if r.Hops == 0 && r.From != "" {
+				t.Errorf("seed %s has a From value; seeds are not reached from anywhere", r.ID)
+			}
+			if r.Hops > 0 {
+				if r.From == "" {
+					t.Errorf("%s was reached at %d hops with no provenance", r.ID, r.Hops)
+				}
+				if _, present := byID[r.From]; !present {
+					t.Errorf("%s claims to be reached from %s, which is not in the result", r.ID, r.From)
+				}
 			}
 		}
 	})

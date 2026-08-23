@@ -47,9 +47,11 @@ services:
     volumes:
       - nats-data:/data
     healthcheck:
-      # NATS ships no shell tools in the alpine image, so the monitoring
-      # endpoint is probed with the server's own binary.
-      test: ["CMD", "nats-server", "--signal", "status"]
+      # NATS's own monitoring endpoint, enabled by --http_port above.
+      # `nats-server --signal status` looks the part but needs a pid it cannot
+      # resolve as PID 1 in a container, so it reports unhealthy on a server
+      # that is running perfectly.
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8222/healthz"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -91,7 +93,11 @@ services:
       postgres:
         condition: service_healthy
       nats:
-        condition: service_healthy
+        # service_started, not service_healthy. The architecture states that the
+        # event bus is NOT required for the API to serve: ingestion continues
+        # without fan-out. Blocking API startup on the bus would contradict that
+        # in the one place it is easiest to get wrong.
+        condition: service_started
       opa:
         condition: service_healthy
     environment:

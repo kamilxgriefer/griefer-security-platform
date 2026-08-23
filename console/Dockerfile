@@ -3,7 +3,10 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
 RUN corepack enable
-COPY package.json pnpm-lock.yaml ./
+# pnpm-workspace.yaml carries the build-script allowlist. Without it pnpm
+# refuses to install rather than silently running an unapproved postinstall,
+# which is the correct behaviour and the reason it must be copied here.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 FROM node:22-alpine AS build

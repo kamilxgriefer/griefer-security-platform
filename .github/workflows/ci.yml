@@ -300,6 +300,17 @@ jobs:
             exit 1
           fi
 
+      - name: Verify the console image ships no package manager
+        run: |
+          for tool in npm npx corepack yarn; do
+            if docker run --rm --entrypoint="" griefer-console:ci sh -c "command -v ${tool}" 2>/dev/null; then
+              echo "::error::${tool} is present in the console runtime image"
+              exit 1
+            fi
+          done
+          echo "no package manager in the console runtime image"
+          docker run --rm --entrypoint="" griefer-console:ci node --version
+
       - name: Validate the Compose stack
         run: docker compose -f docker-compose.yml config -q && echo "docker-compose.yml is valid"
 

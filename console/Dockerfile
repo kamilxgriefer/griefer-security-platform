@@ -24,6 +24,24 @@ ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0
 
+# Strip the package managers out of the runtime image.
+#
+# The standalone server runs `node server.js` and never invokes one. Their
+# bundled dependencies — npm vendors tar, brace-expansion and a few dozen
+# others — are otherwise scanned as part of this image and carry CVEs that have
+# nothing to do with GRIEFER. Removing them is a real reduction in attack
+# surface rather than a suppressed finding: a package manager is also the most
+# useful thing an attacker could find after reaching code execution here.
+RUN rm -rf \
+        /usr/local/lib/node_modules/npm \
+        /usr/local/lib/node_modules/corepack \
+        /usr/local/bin/npm \
+        /usr/local/bin/npx \
+        /usr/local/bin/corepack \
+        /opt/yarn-* \
+        /usr/local/bin/yarn \
+        /usr/local/bin/yarnpkg
+
 # Next.js "standalone" output ships only the server and the files it actually
 # imports, which keeps the runtime image free of the build toolchain.
 COPY --from=build /app/.next/standalone ./

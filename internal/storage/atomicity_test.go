@@ -12,7 +12,7 @@ import (
 )
 
 // This file exercises the atomic write contract — SaveActionWithAudit and
-// AppendAudit — against every store implementation, using the same factory
+// entry-only writes — against every store implementation, using the same factory
 // pattern as the conformance suite in store_test.go.
 //
 // The guarantee under test is the one GRIEFER's accountability story rests on:
@@ -184,7 +184,7 @@ func TestSaveActionWithAuditWritesOnlyTheEntriesWhenTheActionIsNil(t *testing.T)
 	}
 }
 
-func TestAppendAuditWritesTheWholeBatchWithIncreasingSequences(t *testing.T) {
+func TestAWholeBatchOfEntriesIsWrittenWithIncreasingSequences(t *testing.T) {
 	for _, f := range factories(t) {
 		t.Run(f.name, func(t *testing.T) {
 			store := f.open(t)
@@ -195,8 +195,8 @@ func TestAppendAuditWritesTheWholeBatchWithIncreasingSequences(t *testing.T) {
 				batch = append(batch, atomicEntry(t,
 					fmt.Sprintf("aud-batch-%d", i), "admin", audit.ResultDenied, i))
 			}
-			if err := store.AppendAudit(ctx, batch); err != nil {
-				t.Fatalf("AppendAudit() error = %v", err)
+			if err := store.SaveActionWithAudit(ctx, nil, batch); err != nil {
+				t.Fatalf("SaveActionWithAudit() error = %v", err)
 			}
 
 			got, total, err := store.List(ctx, storage.MaxPageSize, 0)
@@ -224,8 +224,8 @@ func TestAppendAuditWritesTheWholeBatchWithIncreasingSequences(t *testing.T) {
 
 			// An empty batch is what a code path with nothing to say produces. It
 			// must be a no-op, not an error the caller has to special-case.
-			if err := store.AppendAudit(ctx, nil); err != nil {
-				t.Errorf("AppendAudit() with no entries error = %v, want nil", err)
+			if err := store.SaveActionWithAudit(ctx, nil, nil); err != nil {
+				t.Errorf("SaveActionWithAudit() with no entries error = %v, want nil", err)
 			}
 			if counts := countStore(t, store); counts.auditEntries != 4 {
 				t.Errorf("an empty batch changed the trail: %d entries, want 4", counts.auditEntries)
@@ -331,9 +331,9 @@ func TestSaveActionWithAuditWritesNothingWhenAnyEntryIsInvalid(t *testing.T) {
 	}
 }
 
-// TestAppendAuditWritesNothingWhenAnyEntryIsInvalid is the same guarantee for
+// TestAnEntryOnlyBatchWritesNothingWhenAnyEntryIsInvalid is the same guarantee for
 // the entries-only path, which is what the deny and error exits use.
-func TestAppendAuditWritesNothingWhenAnyEntryIsInvalid(t *testing.T) {
+func TestAnEntryOnlyBatchWritesNothingWhenAnyEntryIsInvalid(t *testing.T) {
 	tests := []struct {
 		name    string
 		entries func(t *testing.T) []*audit.Entry
@@ -372,8 +372,8 @@ func TestAppendAuditWritesNothingWhenAnyEntryIsInvalid(t *testing.T) {
 					ctx := context.Background()
 					before := seedBaseline(t, store)
 
-					if err := store.AppendAudit(ctx, tt.entries(t)); err == nil {
-						t.Fatal("AppendAudit() accepted a batch containing an invalid entry")
+					if err := store.SaveActionWithAudit(ctx, nil, tt.entries(t)); err == nil {
+						t.Fatal("SaveActionWithAudit() accepted a batch containing an invalid entry")
 					}
 
 					after := countStore(t, store)
@@ -461,8 +461,8 @@ func TestAtomicallyWrittenEntriesReadBackInSequenceOrderWithActorRoleKept(t *tes
 				atomicEntry(t, "aud-order-3", "", audit.ResultPolicyTimeout, 3),
 				atomicEntry(t, "aud-order-4", "analyst", audit.ResultDenied, 4),
 			}
-			if err := store.AppendAudit(ctx, second); err != nil {
-				t.Fatalf("AppendAudit() error = %v", err)
+			if err := store.SaveActionWithAudit(ctx, nil, second); err != nil {
+				t.Fatalf("SaveActionWithAudit() error = %v", err)
 			}
 
 			got, total, err := store.List(ctx, storage.MaxPageSize, 0)
@@ -547,8 +547,8 @@ func TestACommittedEntryCannotBeChangedByMutatingTheCallersCopy(t *testing.T) {
 			ctx := context.Background()
 
 			entry := atomicEntry(t, "aud-alias-1", "analyst", audit.ResultDenied, 1)
-			if err := store.AppendAudit(ctx, []*audit.Entry{entry}); err != nil {
-				t.Fatalf("AppendAudit() error = %v", err)
+			if err := store.SaveActionWithAudit(ctx, nil, []*audit.Entry{entry}); err != nil {
+				t.Fatalf("SaveActionWithAudit() error = %v", err)
 			}
 
 			// A denial rewritten into an approval is the exact tampering the

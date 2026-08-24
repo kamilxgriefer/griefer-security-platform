@@ -81,8 +81,22 @@ CREATE TABLE IF NOT EXISTS audit_log (
     details      JSONB
 );
 
+-- actor_role records the role held at the time of the entry.
+--
+-- Added after the table shipped, so it is an additive ALTER rather than a
+-- column in the CREATE above: an existing deployment must gain the column
+-- without its table being dropped and rebuilt. Rows written before this
+-- migration keep NULL, which reads as "unknown" rather than as a false claim
+-- that they were written by an analyst.
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS actor_role TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_audit_log_action  ON audit_log (action);
 CREATE INDEX IF NOT EXISTS idx_audit_log_subject ON audit_log (subject_type, subject_id);
+-- The trail is read newest-first and is filtered by who acted and by which
+-- request produced it; without these, every such read is a sequential scan.
+CREATE INDEX IF NOT EXISTS idx_audit_log_occurred_at ON audit_log (occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_actor       ON audit_log (actor);
+CREATE INDEX IF NOT EXISTS idx_audit_log_request_id  ON audit_log (request_id) WHERE request_id IS NOT NULL;
 
 CREATE OR REPLACE FUNCTION griefer_audit_log_is_append_only() RETURNS TRIGGER AS $$
 BEGIN

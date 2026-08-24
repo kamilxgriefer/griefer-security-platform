@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kamilxgriefer/griefer-security-platform/internal/audit"
@@ -294,8 +295,88 @@ func (s *PostgresStore) ListIncidents(ctx context.Context, filter IncidentFilter
 	return out, total, nil
 }
 
+// querier is the overlap between a connection pool and a transaction.
+//
+// Both pgxpool.Pool and pgx.Tx provide these three methods, so a write can be
+// expressed once and then run either on its own or as part of a larger unit.
+// The alternative — a second copy of each statement for the transactional
+// path — is how the two copies end up disagreeing about what a column means.
+type querier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// SaveActionWithAudit implements Store.
+//
+// The response action and the entries describing its evaluation are written in
+// one transaction, so the trail cannot disagree with the record it describes.
+// A response action with no audit entry is a change nobody can account for; an
+// audit entry naming an action that was never written points at nothing.
+//
+// Note what is NOT inside the transaction: the policy evaluation. It happens
+// before this is called, because holding a database transaction open across a
+// call to another service ties one system's connection budget to another
+// system's latency.
+func (s *PostgresStore) SaveActionWithAudit(ctx context.Context, action *incidents.ResponseAction, entries []*audit.Entry) error {
+	return s.inTx(ctx, func(tx querier) error {
+		if action != nil {
+			if err := saveAction(ctx, tx, action); err != nil {
+				return err
+			}
+		}
+		for _, entry := range entries {
+			if err := appendAudit(ctx, tx, entry); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// AppendAudit implements Store, for outcomes that produce no response action.
+func (s *PostgresStore) AppendAudit(ctx context.Context, entries []*audit.Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	return s.inTx(ctx, func(tx querier) error {
+		for _, entry := range entries {
+			if err := appendAudit(ctx, tx, entry); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// inTx runs fn inside a transaction, rolling back on any error.
+//
+// The rollback uses context.WithoutCancel: when the failure is a cancelled or
+// timed-out request, a rollback issued on that same dead context cannot be
+// delivered, and the transaction would be left for the server to reap.
+func (s *PostgresStore) inTx(ctx context.Context, fn func(querier) error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("storage: begin transaction: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback(context.WithoutCancel(ctx))
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("storage: commit transaction: %w", err)
+	}
+	return nil
+}
+
 // SaveAction implements Store.
 func (s *PostgresStore) SaveAction(ctx context.Context, action *incidents.ResponseAction) error {
+	return saveAction(ctx, s.pool, action)
+}
+
+// saveAction writes a response action through q, which may be the pool or a
+// transaction.
+func saveAction(ctx context.Context, q querier, action *incidents.ResponseAction) error {
 	if action == nil || action.ID == "" {
 		return fmt.Errorf("storage: response action requires an id")
 	}
@@ -303,14 +384,14 @@ func (s *PostgresStore) SaveAction(ctx context.Context, action *incidents.Respon
 	if err != nil {
 		return fmt.Errorf("storage: encode response action: %w", err)
 	}
-	const q = `
+	const stmt = `
 		INSERT INTO response_actions (
 			id, incident_id, action_type, mode, status, requested_by, created_at, document
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		ON CONFLICT (id) DO UPDATE SET
 			status = EXCLUDED.status,
 			document = EXCLUDED.document`
-	_, err = s.pool.Exec(ctx, q,
+	_, err = q.Exec(ctx, stmt,
 		action.ID, action.IncidentID, action.ActionType, string(action.Mode),
 		string(action.Status), action.RequestedBy, action.CreatedAt, doc)
 	if err != nil {
@@ -384,6 +465,12 @@ func (s *PostgresStore) ListActions(ctx context.Context, incidentID string, limi
 // Append implements audit.Sink. The database assigns the sequence, so ordering
 // is decided by PostgreSQL rather than by whichever replica happened to write.
 func (s *PostgresStore) Append(ctx context.Context, entry *audit.Entry) error {
+	return appendAudit(ctx, s.pool, entry)
+}
+
+// appendAudit writes one audit entry through q, which may be the pool or a
+// transaction.
+func appendAudit(ctx context.Context, q querier, entry *audit.Entry) error {
 	if entry == nil || entry.ID == "" {
 		return fmt.Errorf("storage: audit entry requires an id")
 	}
@@ -395,13 +482,13 @@ func (s *PostgresStore) Append(ctx context.Context, entry *audit.Entry) error {
 			return fmt.Errorf("storage: encode audit details: %w", err)
 		}
 	}
-	const q = `
+	const stmt = `
 		INSERT INTO audit_log (
-			id, occurred_at, actor, action, subject_type, subject_id, outcome, reason, request_id, details
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			id, occurred_at, actor, actor_role, action, subject_type, subject_id, outcome, reason, request_id, details
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		RETURNING sequence`
-	err := s.pool.QueryRow(ctx, q,
-		entry.ID, entry.Timestamp, entry.Actor, entry.Action, entry.SubjectType,
+	err := q.QueryRow(ctx, stmt,
+		entry.ID, entry.Timestamp, entry.Actor, nullable(entry.ActorRole), entry.Action, entry.SubjectType,
 		entry.SubjectID, entry.Outcome, entry.Reason, nullable(entry.RequestID), details,
 	).Scan(&entry.Sequence)
 	if err != nil {
@@ -421,8 +508,8 @@ func (s *PostgresStore) List(ctx context.Context, limit, offset int) ([]*audit.E
 		return nil, 0, fmt.Errorf("storage: count audit entries: %w", err)
 	}
 	const q = `
-		SELECT sequence, id, occurred_at, actor, action, subject_type, subject_id,
-		       outcome, reason, COALESCE(request_id, ''), details
+		SELECT sequence, id, occurred_at, actor, COALESCE(actor_role, ''), action,
+		       subject_type, subject_id, outcome, reason, COALESCE(request_id, ''), details
 		FROM audit_log ORDER BY sequence ASC LIMIT $1 OFFSET $2`
 	rows, err := s.pool.Query(ctx, q, limit, offset)
 	if err != nil {
@@ -437,8 +524,8 @@ func (s *PostgresStore) List(ctx context.Context, limit, offset int) ([]*audit.E
 			details []byte
 		)
 		if err := rows.Scan(&entry.Sequence, &entry.ID, &entry.Timestamp, &entry.Actor,
-			&entry.Action, &entry.SubjectType, &entry.SubjectID, &entry.Outcome,
-			&entry.Reason, &entry.RequestID, &details); err != nil {
+			&entry.ActorRole, &entry.Action, &entry.SubjectType, &entry.SubjectID,
+			&entry.Outcome, &entry.Reason, &entry.RequestID, &details); err != nil {
 			return nil, 0, fmt.Errorf("storage: scan audit entry: %w", err)
 		}
 		if len(details) > 0 {

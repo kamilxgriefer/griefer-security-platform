@@ -35,6 +35,27 @@ const (
 	ActionSystemStopped       = "system.stopped"
 )
 
+// Results of a response-action evaluation, recorded in Details["result"].
+//
+// Outcome above answers "did this succeed"; Result answers "what happened",
+// and the two are not the same question. A denial and a policy timeout are both
+// OutcomeDenied — GRIEFER fails closed, so an unreachable Policy Kernel refuses
+// the action exactly as a deliberate refusal does. Reading only the outcome,
+// those are indistinguishable, and a platform that cannot tell a considered
+// refusal from a broken dependency cannot be operated.
+const (
+	ResultAllowed                = "allowed"
+	ResultRequiresApproval       = "requires_approval"
+	ResultDenied                 = "denied"
+	ResultInvalidAction          = "invalid_action"
+	ResultInsufficientPermission = "insufficient_permission"
+	ResultValidationFailed       = "validation_failed"
+	ResultPolicyUnavailable      = "policy_unavailable"
+	ResultPolicyTimeout          = "policy_timeout"
+	ResultPersistenceFailed      = "persistence_failed"
+	ResultInternalError          = "internal_error"
+)
+
 // Outcomes recorded on an entry.
 const (
 	OutcomeSuccess = "success"
@@ -57,10 +78,17 @@ const (
 // verdicts and counts — the things needed to reconstruct a decision — not for
 // tokens, credentials or raw telemetry payloads.
 type Entry struct {
-	ID          string         `json:"id"`
-	Sequence    int64          `json:"sequence"`
-	Timestamp   time.Time      `json:"timestamp"`
-	Actor       string         `json:"actor"`
+	ID        string    `json:"id"`
+	Sequence  int64     `json:"sequence"`
+	Timestamp time.Time `json:"timestamp"`
+	Actor     string    `json:"actor"`
+	// ActorRole is the role the actor held when the entry was written.
+	//
+	// Stored beside the actor rather than looked up when the trail is read,
+	// because a role can change: an account demoted next week must not
+	// retroactively appear to have been an analyst when it acted as an
+	// administrator. The trail records what was true at the time.
+	ActorRole   string         `json:"actor_role,omitempty"`
 	Action      string         `json:"action"`
 	SubjectType string         `json:"subject_type"`
 	SubjectID   string         `json:"subject_id"`
@@ -105,12 +133,15 @@ func NewRecorderWithClock(sink Sink, now func() time.Time) (*Recorder, error) {
 	return r, nil
 }
 
-// Record assigns an identity and timestamp to entry and appends it.
+// Prepare validates entry and stamps it with an identity and timestamp,
+// WITHOUT writing it.
 //
-// A failure to write audit is returned to the caller rather than swallowed.
-// Whether an operation may proceed without its audit record is a policy
-// question, and it belongs to the caller that knows what the operation was.
-func (r *Recorder) Record(ctx context.Context, entry Entry) (*Entry, error) {
+// This exists so that a caller can build the entries for an operation, hand
+// them to a store that writes them inside the same transaction as the thing
+// they describe, and still get the same validation and stamping every entry
+// gets. Without it, atomic callers would have to duplicate the rules here —
+// and the copy would drift.
+func (r *Recorder) Prepare(entry Entry) (*Entry, error) {
 	if entry.Action == "" {
 		return nil, fmt.Errorf("audit: action is required")
 	}
@@ -122,10 +153,23 @@ func (r *Recorder) Record(ctx context.Context, entry Entry) (*Entry, error) {
 	if entry.Actor == "" {
 		entry.Actor = "system:griefer"
 	}
-	if err := r.sink.Append(ctx, &entry); err != nil {
+	return &entry, nil
+}
+
+// Record assigns an identity and timestamp to entry and appends it.
+//
+// A failure to write audit is returned to the caller rather than swallowed.
+// Whether an operation may proceed without its audit record is a policy
+// question, and it belongs to the caller that knows what the operation was.
+func (r *Recorder) Record(ctx context.Context, entry Entry) (*Entry, error) {
+	prepared, err := r.Prepare(entry)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.sink.Append(ctx, prepared); err != nil {
 		return nil, fmt.Errorf("audit: append entry: %w", err)
 	}
-	return &entry, nil
+	return prepared, nil
 }
 
 // List returns audit entries in insertion order, oldest first.

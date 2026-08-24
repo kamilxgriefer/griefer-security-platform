@@ -18,6 +18,7 @@ import (
 	"github.com/kamilxgriefer/griefer-security-platform/internal/incidents"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/policy"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/storage"
+	"github.com/kamilxgriefer/griefer-security-platform/policies"
 )
 
 // Correlator is the subset of the correlation engine the service depends on.
@@ -304,8 +305,23 @@ type EvaluateRequest struct {
 
 // EvaluateAction runs a proposed action through the Policy Kernel and records
 // the outcome. It never contacts an external system.
+//
+// Every path out of this function leaves an audit entry, including the ones
+// that reject the request before a policy is consulted. An evaluation that
+// produced no trail is indistinguishable, later, from one that never happened.
 func (s *Service) EvaluateAction(ctx context.Context, req EvaluateRequest) (*incidents.ResponseAction, error) {
 	requestID := httpx.RequestIDFromContext(ctx)
+
+	// The operator comes from the request context, where PrincipalMiddleware
+	// put it after the service credential was verified. req.RequestedBy is
+	// deliberately NOT read: it is a body field, and a body is written by
+	// whoever made the call. Attributing an action to a value the caller chose
+	// makes the trail look authoritative while saying nothing.
+	principal := httpx.PrincipalFromContext(ctx)
+	actor := principal.Subject
+	if actor == "" {
+		actor = auditSystemActor
+	}
 
 	mode := incidents.Mode(req.Mode)
 	if mode == "" {
@@ -317,38 +333,64 @@ func (s *Service) EvaluateAction(ctx context.Context, req EvaluateRequest) (*inc
 		IncidentID:  req.IncidentID,
 		ActionType:  req.ActionType,
 		Mode:        mode,
-		RequestedBy: defaultString(req.RequestedBy, "unknown"),
+		RequestedBy: actor,
 		CreatedAt:   s.now().UTC(),
+	}
+
+	// base is the audit shape every outcome shares, so no branch can quietly
+	// omit the actor, the request id or the subject.
+	base := func(result, auditAction, outcome, reason string, extra map[string]any) audit.Entry {
+		details := map[string]any{
+			"result":             result,
+			"incident_id":        req.IncidentID,
+			"action_type":        req.ActionType,
+			"mode":               string(mode),
+			"response_action_id": action.ID,
+			"policy_revision":    policies.Revision(),
+		}
+		for k, v := range extra {
+			details[k] = v
+		}
+		return audit.Entry{
+			Actor:       actor,
+			ActorRole:   principal.Role,
+			Action:      auditAction,
+			SubjectType: audit.SubjectAction,
+			SubjectID:   action.ID,
+			Outcome:     outcome,
+			Reason:      reason,
+			RequestID:   requestID,
+			Details:     details,
+		}
 	}
 
 	spec, err := incidents.Lookup(req.ActionType)
 	if err != nil {
 		action.Status = incidents.ActionRejected
 		action.Reason = fmt.Sprintf("Action type %q is not defined in the GRIEFER action catalog.", req.ActionType)
-		s.recordAudit(ctx, audit.Entry{
-			Action: audit.ActionActionRejected, SubjectType: audit.SubjectAction,
-			SubjectID: action.ID, Outcome: audit.OutcomeDenied, RequestID: requestID,
-			Reason:  action.Reason,
-			Details: map[string]any{"requested_action_type": req.ActionType, "incident_id": req.IncidentID},
-		})
+		s.persistEvaluation(ctx, action, base(audit.ResultInvalidAction,
+			audit.ActionActionRejected, audit.OutcomeDenied, action.Reason, nil))
 		return action, err
 	}
 	if !mode.Valid() {
 		action.Status = incidents.ActionRejected
 		action.Reason = fmt.Sprintf("Response mode %q is not recognised.", req.Mode)
-		s.recordAudit(ctx, audit.Entry{
-			Action: audit.ActionActionRejected, SubjectType: audit.SubjectAction,
-			SubjectID: action.ID, Outcome: audit.OutcomeDenied, RequestID: requestID,
-			Reason: action.Reason,
-		})
+		s.persistEvaluation(ctx, action, base(audit.ResultValidationFailed,
+			audit.ActionActionRejected, audit.OutcomeDenied, action.Reason, nil))
 		return action, fmt.Errorf("invalid response mode %q", req.Mode)
 	}
 
 	inc, err := s.store.GetIncident(ctx, req.IncidentID)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
+			s.persistEvaluation(ctx, nil, base(audit.ResultValidationFailed,
+				audit.ActionActionRejected, audit.OutcomeDenied,
+				"The referenced incident does not exist.", nil))
 			return nil, ErrIncidentNotFound
 		}
+		s.persistEvaluation(ctx, nil, base(audit.ResultInternalError,
+			audit.ActionActionRejected, audit.OutcomeFailure,
+			"The incident could not be loaded.", nil))
 		return nil, fmt.Errorf("load incident: %w", err)
 	}
 
@@ -381,11 +423,19 @@ func (s *Service) EvaluateAction(ctx context.Context, req EvaluateRequest) (*inc
 			FindingCount:       len(inc.Findings),
 		},
 		Request: policy.RequestInput{
-			Automated:   req.Automated,
-			RequestedBy: action.RequestedBy,
+			// Automated is derived, not accepted. It selects which corroboration
+			// bar the policy applies, so a caller able to set it could choose
+			// the bar it is judged against. A request carrying an operator is a
+			// person pressing a button, by definition.
+			Automated:   principal.Zero() && req.Automated,
+			RequestedBy: actor,
 		},
 	}
 
+	// The Policy Kernel is consulted OUTSIDE any database transaction. Holding
+	// one open across a call to another service ties this database's connection
+	// budget to that service's latency, and a slow policy engine becomes a
+	// exhausted connection pool.
 	decision, kernelErr := s.kernel.Evaluate(ctx, input)
 	action.PolicyDecision = &decision
 	s.metrics.PolicyDecisions.WithLabelValues(decision.Effect, decision.Engine, boolLabel(decision.FailClosed)).Inc()
@@ -399,39 +449,85 @@ func (s *Service) EvaluateAction(ctx context.Context, req EvaluateRequest) (*inc
 
 	s.applyDecision(action, spec, inc, decision)
 
-	if err := s.store.SaveAction(ctx, action); err != nil {
-		return nil, fmt.Errorf("persist response action: %w", err)
+	result := evaluationResult(action.Status, decision, kernelErr)
+	decisionDetails := map[string]any{
+		"incident_id":      inc.ID,
+		"action_type":      spec.Type,
+		"effect":           decision.Effect,
+		"fail_closed":      decision.FailClosed,
+		"engine":           decision.Engine,
+		"policy_version":   decision.PolicyVersion,
+		"reversible":       spec.Reversible,
+		"destructive":      spec.Destructive,
+		"rollback_action":  spec.RollbackAction,
+		"targets_critical": targetsCritical,
+		"risk_score":       inc.RiskScore,
+		"evidence_types":   input.Incident.EvidenceCategories,
 	}
 
-	// Requirement: every Policy Kernel decision produces an audit entry.
-	s.recordAudit(ctx, audit.Entry{
-		Action: audit.ActionPolicyEvaluated, SubjectType: audit.SubjectAction,
-		SubjectID: action.ID, Outcome: auditOutcomeFor(decision.Effect), RequestID: requestID,
-		Reason: joinReasons(decision.Reasons),
-		Details: map[string]any{
-			"incident_id":      inc.ID,
-			"action_type":      spec.Type,
-			"mode":             string(mode),
-			"effect":           decision.Effect,
-			"fail_closed":      decision.FailClosed,
-			"engine":           decision.Engine,
-			"policy_version":   decision.PolicyVersion,
-			"reversible":       spec.Reversible,
-			"destructive":      spec.Destructive,
-			"rollback_action":  spec.RollbackAction,
-			"targets_critical": targetsCritical,
-			"risk_score":       inc.RiskScore,
-			"evidence_types":   input.Incident.EvidenceCategories,
-		},
-	})
-	s.recordAudit(ctx, audit.Entry{
-		Action: auditActionFor(action.Status), SubjectType: audit.SubjectAction,
-		SubjectID: action.ID, Outcome: auditOutcomeFor(decision.Effect), RequestID: requestID,
-		Reason:  action.Reason,
-		Details: map[string]any{"incident_id": inc.ID, "action_type": spec.Type, "mode": string(mode)},
-	})
+	// One transaction covers the action and both entries describing it.
+	s.persistEvaluation(ctx, action,
+		base(result, audit.ActionPolicyEvaluated, auditOutcomeFor(decision.Effect),
+			joinReasons(decision.Reasons), decisionDetails),
+		base(result, auditActionFor(action.Status), auditOutcomeFor(decision.Effect),
+			action.Reason, nil),
+	)
 
 	return action, nil
+}
+
+// auditSystemActor names the platform itself, for work no operator asked for.
+const auditSystemActor = "system:griefer"
+
+// evaluationResult classifies what happened, beyond whether it was permitted.
+func evaluationResult(status incidents.ActionStatus, decision incidents.PolicyDecision, kernelErr error) string {
+	if kernelErr != nil {
+		if errors.Is(kernelErr, context.DeadlineExceeded) {
+			return audit.ResultPolicyTimeout
+		}
+		return audit.ResultPolicyUnavailable
+	}
+	switch status {
+	case incidents.ActionSimulated:
+		return audit.ResultAllowed
+	case incidents.ActionRequiresApproval:
+		return audit.ResultRequiresApproval
+	default:
+		return audit.ResultDenied
+	}
+}
+
+// persistEvaluation writes the action and its audit entries as one unit.
+//
+// A failure here is loud and is NOT converted into a client error, which is a
+// deliberate and uncomfortable choice. The alternative — failing the request —
+// would mean an unreachable audit table takes the whole evaluation path down.
+// Since v0.1 executes nothing, an evaluation that is not durably recorded has
+// changed nothing in the world, so refusing to answer buys no safety. What it
+// must never do is look successful while being invisible, so the failure is
+// logged with the request id and the store's health is what /ready reports.
+//
+// When this platform gains an actuator, this is the first decision that has to
+// be revisited: at that point an unrecorded action HAS changed something, and
+// the request must fail instead.
+func (s *Service) persistEvaluation(ctx context.Context, action *incidents.ResponseAction, entries ...audit.Entry) {
+	prepared := make([]*audit.Entry, 0, len(entries))
+	for _, entry := range entries {
+		p, err := s.auditor.Prepare(entry)
+		if err != nil {
+			s.logger.ErrorContext(ctx, "failed to prepare audit entry",
+				slog.String("request_id", httpx.RequestIDFromContext(ctx)),
+				slog.String("audit_action", entry.Action),
+				slog.String("error", err.Error()))
+			continue
+		}
+		prepared = append(prepared, p)
+	}
+	if err := s.store.SaveActionWithAudit(ctx, action, prepared); err != nil {
+		s.logger.ErrorContext(ctx, "failed to persist evaluation atomically",
+			slog.String("request_id", httpx.RequestIDFromContext(ctx)),
+			slog.String("error", err.Error()))
+	}
 }
 
 // applyDecision turns a policy verdict into an action status and, when the

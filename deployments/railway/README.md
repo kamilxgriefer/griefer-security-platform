@@ -90,20 +90,33 @@ analyst variables are optional.
 `GRIEFER_ALLOW_PUBLIC_BIND` is about the bind address, not exposure. The service
 still has no public domain; Railway only routes to it from inside the project.
 
-`GRIEFER_OPA_DECISION_PATH` is listed because getting it wrong is quiet. It was
-first deployed as `griefer/authz/decision` — the path of OPA's own authorisation
-policy, which that policy protects, so OPA answered `401`. The Policy Kernel
-fails closed, so every evaluation was correctly denied and the console looked
-like it was working: actions were refused, which is what a policy engine does.
+`GRIEFER_OPA_DECISION_PATH` is listed because getting it wrong is easy to miss.
+It was first deployed as `griefer/authz/decision`, which names no document at
+all — there is no `griefer.authz` package. The response is `401` rather than
+`404` because OPA's server authorisation policy (`data.system.authz.allow`, in
+`policies/system/authz.rego`) refuses every path outside its allowlist before
+looking for the document. That allowlist is `health`,
+`v1/data/griefer/response/decision` and `v1/data/griefer/response/policy_version`.
 
-Nothing surfaced it except the audit trail, where those denials carry
-`result: policy_unavailable` rather than `result: denied`. That distinction is
-the reason the result taxonomy exists — an unreachable policy engine and a
-considered refusal are the same HTTP response and the same action status, and
-only the trail tells them apart.
+The Policy Kernel fails closed, so every evaluation was denied — and a console
+whose actions are refused looks a great deal like a console with a strict policy.
+
+Three things did report it, and they are worth knowing about because they are
+the ones to check first:
+
+* the response carries `X-Griefer-Policy-Degraded: true`
+  (`internal/api/handlers.go`);
+* the returned `policy_decision` has `fail_closed: true` and
+  `engine: unavailable` rather than `remote`;
+* the audit entry records `result: policy_unavailable` rather than
+  `result: denied`.
+
+The last of those is what the result taxonomy is for: the HTTP status and the
+action status are identical either way, so a trail that recorded only "denied"
+would preserve no evidence that the policy engine had been unreachable at all.
 
 The value must match `policies.DecisionPath`. Local Compose sets it correctly,
-which is why this only appeared in a deployment.
+which is why this appeared only in a deployment.
 
 ### `nats` — private
 

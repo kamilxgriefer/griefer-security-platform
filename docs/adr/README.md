@@ -23,3 +23,4 @@ reversal is a new ADR that supersedes the old one.
 | [0003](0003-fail-closed-policy.md) | Fail closed on policy unavailability | Accepted |
 | [0004](0004-simulation-only-v01.md) | Ship v0.1 with no actuator | Accepted |
 | [0005](0005-evidence-categories.md) | Gate automation on independent evidence categories | Accepted |
+| [0006](0006-action-evaluation-audit-atomicity.md) | Evaluate policy outside the transaction, persist the decision inside one | Accepted |

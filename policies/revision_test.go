@@ -31,8 +31,8 @@ func digestInOrder(t *testing.T, files []regoFile) string {
 	for _, f := range files {
 		// Mirrors Revision(): path length-prefixed, then content
 		// length-prefixed, then the bytes.
-		fmt.Fprintf(sum, "%d:%s\n", len(f.path), f.path)
-		fmt.Fprintf(sum, "%d:\n", len(f.content))
+		_, _ = fmt.Fprintf(sum, "%d:%s\n", len(f.path), f.path)
+		_, _ = fmt.Fprintf(sum, "%d:\n", len(f.content))
 		sum.Write(f.content)
 	}
 	return "sha256:" + hex.EncodeToString(sum.Sum(nil))

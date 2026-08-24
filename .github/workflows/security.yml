@@ -105,6 +105,9 @@ jobs:
           severity: CRITICAL,HIGH
           exit-code: "1"
           format: table
+          # .trivyignore carries one accepted finding, with the reason and the
+          # commands to re-check it written next to the rule id.
+          trivyignores: .trivyignore
 
   images:
     name: Image scan and SBOM

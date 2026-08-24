@@ -324,15 +324,14 @@ unknown is far better than a platform that will not start.
 
 ## 7. The transaction boundary
 
-`storage.Store` carries two methods for this, on the interface rather than as an
+`storage.Store` carries one method for this, on the interface rather than as an
 optional capability a caller type-asserts for:
 
 ```go
 SaveActionWithAudit(ctx, action *incidents.ResponseAction, entries []*audit.Entry) error
-AppendAudit(ctx, entries []*audit.Entry) error
 ```
 
-They are mandatory because an optional guarantee is one a caller silently loses
+It is mandatory because an optional guarantee is one a caller silently loses
 when a store does not implement it, and "the audit trail is complete unless you
 happened to configure the other store" is not a guarantee worth stating. A `nil`
 action writes only the entries — the shape of an evaluation rejected before any

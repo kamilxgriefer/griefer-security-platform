@@ -1,0 +1,58 @@
+# Trivy findings that are accepted, each with the reason and where to verify it.
+#
+# Suppressing a scanner finding is worth doing rarely and never quietly, so
+# every entry names what the rule checks, why it does not hold here, the
+# document that carries the evidence, and the date the acceptance expires.
+#
+# Two things about this file itself, both verified against Trivy v0.70.0 — the
+# version the pinned aquasecurity/trivy-action@v0.36.0 installs:
+#
+#   * It is YAML because the plain-text .trivyignore format cannot scope an
+#     entry to a path. That format reads each line as a bare rule id, so
+#     "DS-0002:deployments/railway/nats/Dockerfile" matches nothing at all, and
+#     silencing a rule for one file means silencing it for every file.
+#   * The .yaml suffix is load-bearing. Trivy picks the parser from the file
+#     extension, so this same content in a file named ".trivyignore" is read as
+#     a list of ids, matches nothing, and suppresses nothing — silently.
+#
+# Trivy does not find this file on its own: --ignorefile still defaults to
+# ".trivyignore", so a local run needs the flag. The Security workflow passes it
+# through the action's "trivyignores" input. Forgetting it shows the accepted
+# finding rather than hiding a real one, which is the right way round.
+#
+#   trivy config . --severity CRITICAL,HIGH --ignorefile .trivyignore.yaml
+
+misconfigurations:
+  # DS-0002 (HIGH) — "Specify at least 1 USER command in Dockerfile with
+  # non-root user as argument". https://avd.aquasec.com/misconfig/ds-0002
+  #
+  # The rule is static: it reads the Dockerfile, finds no USER, and concludes
+  # the container runs as root. For this image that conclusion is wrong.
+  #
+  # A mounted volume arrives owned by root whatever the image declares, so a
+  # NATS container that merely declares USER finds the JetStream store
+  # unwritable and dies on start. The usual workaround is to run the message bus
+  # as root, which is the outcome this rule exists to prevent. entrypoint.sh
+  # instead fixes ownership while still privileged, then hands the server to uid
+  # 10001 with su-exec, which replaces the process rather than forking — so the
+  # server runs unprivileged and as PID 1, receiving signals directly.
+  #
+  # The evidence, the alternatives that were rejected, the runtime check that
+  # actually proves this, and the check that looks right and lies:
+  # docs/security/NATS_RUNTIME_USER_EXCEPTION.md
+  #
+  # Scoped to one path deliberately. Any other Dockerfile that omits USER still
+  # fails the scan.
+  - id: DS-0002
+    paths:
+      - "deployments/railway/nats/Dockerfile"
+    statement: >-
+      The container starts as root only to make the mounted JetStream volume
+      writable, then execs the server as uid 10001 via su-exec, so the server
+      itself never runs privileged. Evidence and the runtime verification
+      command: docs/security/NATS_RUNTIME_USER_EXCEPTION.md
+    # The exception expires rather than rots. On this date Trivy stops honouring
+    # it, the finding returns, and the Security workflow fails until someone
+    # re-reads the evidence and either renews the date or fixes the image.
+    # Verified: an expired_at in the past makes the finding reappear.
+    expired_at: 2027-02-24

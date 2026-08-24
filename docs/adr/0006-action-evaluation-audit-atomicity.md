@@ -76,9 +76,9 @@ and the action first, then performs all writes under a single lock. It is
 exercised by the same suite as the PostgreSQL store, so it cannot quietly become
 a more forgiving fake.
 
-The transaction can only ever *add*. The `griefer_audit_log_is_append_only`
-trigger (which predates M1.1) raises `restrict_violation` on `UPDATE` and
-`DELETE`, and `audit.Sink` exposes only `Append` and `List` —
+The transaction can only ever *add*. The `audit_log_append_only` trigger (which
+predates M1.1) runs `griefer_audit_log_is_append_only()`, raising
+`restrict_violation` on `UPDATE` and `DELETE`, and `audit.Sink` exposes only `Append` and `List` —
 `TestSinkExposesNoMutationMethods` fails if anyone adds a third method.
 
 Each entry carries `policy_revision` from `policies.Revision()`, a SHA-256 over
@@ -149,9 +149,10 @@ and evidence categories the decision actually saw; it needs revisiting alongside
 the actuator. A persistence failure is invisible to the client, which receives a
 `200` describing a decision that is not durable. Every evaluation costs a
 transaction, which is accepted — evaluation is not a throughput path.
-`AppendAudit` is on the interface with no production caller today; every
-evaluation path uses `SaveActionWithAudit`, passing `nil` where there is no
-action. Stating that is better than hiding it.
+Writing this ADR surfaced a second method, `AppendAudit`, that duplicated the
+nil-action case and had no production caller. It was removed rather than
+documented: two ways to do one thing, one of them unused, on an interface every
+store must implement is exactly the kind of surface that rots.
 
 ## Alternatives considered
 

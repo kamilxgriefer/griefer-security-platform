@@ -14,7 +14,7 @@
  */
 
 import { randomBytes, scrypt as scryptCallback } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -57,11 +57,19 @@ const WORDS = [
 ];
 
 function passphrase(words = 5) {
+  // Masking rather than taking a remainder. Both are uniform *while* the list
+  // is a power of two, but a remainder stays silently biased if somebody later
+  // adds a word — 256 % 33 leaves the first 25 entries slightly likelier. The
+  // mask cannot: it stops being correct loudly, at the assertion below, rather
+  // than quietly weakening every password generated afterwards.
+  const mask = WORDS.length - 1;
+  if ((WORDS.length & mask) !== 0) {
+    throw new Error(`WORDS must have a power-of-two length; it has ${WORDS.length}`);
+  }
+
   const chosen = [];
   for (let i = 0; i < words; i += 1) {
-    // rejection-free selection: WORDS.length is 32, a clean power of two, so a
-    // 5-bit draw is uniform.
-    chosen.push(WORDS[randomBytes(1)[0] % WORDS.length]);
+    chosen.push(WORDS[randomBytes(1)[0] & mask]);
   }
   // A digit group so the result satisfies policies that demand one.
   return `${chosen.join("-")}-${randomBytes(2).readUInt16BE(0)}`;
@@ -86,11 +94,18 @@ async function main() {
 
   // Preserve a URL already recorded by a previous run, so re-generating the
   // password does not lose the deployment address.
+  // Read and handle absence, rather than asking whether the file exists and
+  // then reading it: between those two steps the answer can change, and the
+  // read throws on a file that existed a moment earlier.
   let existingUrl = "to be filled in after deployment";
-  if (existsSync(CREDENTIALS_PATH)) {
+  try {
     const previous = readFileSync(CREDENTIALS_PATH, "utf8");
     const match = previous.match(/^GRIEFER demo URL:\s*(.+)$/m);
     if (match?.[1] && !match[1].startsWith("to be filled")) existingUrl = match[1].trim();
+  } catch (error) {
+    // A missing file is the ordinary first run. Anything else is not, and
+    // silently discarding it would lose a recorded URL without saying so.
+    if (error.code !== "ENOENT") throw error;
   }
 
   writeFileSync(

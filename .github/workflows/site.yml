@@ -96,9 +96,23 @@ jobs:
             echo "::error::index.html contains a script element"
             exit 1
           fi
-          if grep -oE '(src|href)="https?://[^"]+"' site/public/index.html \
-             | grep -v 'href="https://github.com/'; then
-            echo "::error::index.html loads a resource from another origin"
+          # A subresource is fetched automatically for everyone who opens the
+          # page; a link is a destination somebody chooses. Only the first puts
+          # a third party in the loading path, so only the first is forbidden
+          # outright — any src=, and any <link href=> (stylesheet, font, icon).
+          if grep -oE 'src="https?://[^"]+"' site/public/index.html; then
+            echo "::error::index.html loads a subresource from another origin"
+            exit 1
+          fi
+          if grep -oE '<link[^>]+href="https?://[^"]+"' site/public/index.html; then
+            echo "::error::index.html links a stylesheet or font from another origin"
+            exit 1
+          fi
+          # Anchors are allowed, but only to origins named here, so a link
+          # cannot quietly start pointing somewhere else.
+          if grep -oE '<a[^>]+href="https?://[^"]+"' site/public/index.html \
+             | grep -vE 'https://github\.com/kamilxgriefer/|https://console-production-b3ea\.up\.railway\.app/'; then
+            echo "::error::index.html links to an origin that is not on the allowlist"
             exit 1
           fi
           echo "no scripts and no third-party resources"

@@ -67,22 +67,38 @@ func ContextWithPrincipal(ctx context.Context, p Principal) context.Context {
 // other way, anyone who could reach the API could name themselves in the audit
 // trail without presenting any credential at all.
 //
-// A malformed or oversized assertion is dropped rather than rejected: the
-// request still carries a valid service credential, so it is a legitimate call
-// from a trusted component, and failing it would take the platform down over a
-// header. What the request loses is its attribution, which then falls back to
-// the system actor and is visible as such in the trail.
+// An ABSENT assertion is fine and means "no operator": the caller is a trusted
+// component acting on nobody's behalf — the seeder, a migration, a probe. Those
+// requests proceed unattributed and are recorded against the system actor.
+//
+// An assertion that is PRESENT but malformed is refused, and the difference
+// matters. Dropping it instead would leave the request looking exactly like the
+// absent case, and RequireRole admits the absent case — so a caller could walk
+// past an administrator-only route simply by making its own identity header
+// unparseable. Sending a header the API cannot read is a bug in a trusted
+// component either way, and it should be visible rather than silently
+// downgraded into more access than the caller asked for.
 func PrincipalMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		subject := strings.TrimSpace(r.Header.Get(HeaderActor))
-		role := strings.TrimSpace(r.Header.Get(HeaderActorRole))
+		rawSubject := r.Header.Get(HeaderActor)
+		rawRole := r.Header.Get(HeaderActorRole)
 
-		if subject == "" || !principalPattern.MatchString(subject) {
+		if strings.TrimSpace(rawSubject) == "" && strings.TrimSpace(rawRole) == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
+
+		subject := strings.TrimSpace(rawSubject)
+		role := strings.TrimSpace(rawRole)
+		if !principalPattern.MatchString(subject) {
+			WriteError(w, r, http.StatusBadRequest, CodeValidationFailed,
+				"The asserted actor is not in an acceptable form.", nil)
+			return
+		}
 		if role != "" && !principalPattern.MatchString(role) {
-			role = ""
+			WriteError(w, r, http.StatusBadRequest, CodeValidationFailed,
+				"The asserted actor role is not in an acceptable form.", nil)
+			return
 		}
 		ctx := ContextWithPrincipal(r.Context(), Principal{Subject: subject, Role: role})
 		next.ServeHTTP(w, r.WithContext(ctx))

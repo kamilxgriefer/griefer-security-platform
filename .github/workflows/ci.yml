@@ -315,7 +315,12 @@ jobs:
           docker run --rm --entrypoint="" griefer-console:ci node --version
 
       - name: Validate the Compose stack
-        run: docker compose -f docker-compose.yml config -q && echo "docker-compose.yml is valid"
+        # .env.example supplies the required variables. Without an env file
+        # the interpolation of every ${VAR:?...} fails, which reports a missing
+        # secret as though the compose file itself were malformed.
+        run: |
+          docker compose --env-file .env.example -f docker-compose.yml config -q \
+            && echo "docker-compose.yml is valid"
 
   compose-e2e:
     name: Compose end-to-end
@@ -342,11 +347,18 @@ jobs:
           done
           curl -sf http://127.0.0.1:8080/ready | tee /dev/stderr | grep -q '"status":"ready"'
 
+      # The API requires a service credential, so the seed has to present the
+      # same one the stack was started with. Sourcing .env keeps the two in
+      # step; hard-coding a value here would drift the moment .env.example does.
       - name: Replay the demonstration scenario
-        run: go run ./cmd/griefer-seed -api http://127.0.0.1:8080
+        run: |
+          set -a; . ./.env; set +a
+          go run ./cmd/griefer-seed -api http://127.0.0.1:8080
 
       - name: Assert the documented outcome and policy verdicts
-        run: python3 scripts/verify-demo.py http://127.0.0.1:8080
+        run: |
+          set -a; . ./.env; set +a
+          python3 scripts/verify-demo.py http://127.0.0.1:8080
 
       - name: Dump logs on failure
         if: failure()

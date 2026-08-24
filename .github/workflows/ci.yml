@@ -113,7 +113,20 @@ jobs:
           GRIEFER_TEST_POSTGRES_DSN: postgres://griefer:griefer_ci@127.0.0.1:5432/griefer_test?sslmode=disable
           GRIEFER_TEST_NATS_URL: nats://127.0.0.1:4222
           GRIEFER_TEST_OPA_URL: http://127.0.0.1:8181
-        run: go test -race -count=1 -coverprofile=coverage.out -covermode=atomic ./...
+        # -p 1 runs one package's test binary at a time.
+        #
+        # internal/storage and tests/integration both read
+        # GRIEFER_TEST_POSTGRES_DSN, and the storage conformance suite TRUNCATEs
+        # every table between cases. Go runs package binaries concurrently by
+        # default, so a truncate could delete the incident the integration test
+        # had just created — which surfaced as "Incident not found" from a test
+        # that had done nothing wrong.
+        #
+        # The race was always there; widening the storage suite made it fire.
+        # Serialising is the blunt fix. The right one is a database per suite,
+        # which needs the harnesses to stop sharing one DSN — recorded in the
+        # pull request rather than rushed in here.
+        run: go test -race -p 1 -count=1 -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Coverage summary
         run: |

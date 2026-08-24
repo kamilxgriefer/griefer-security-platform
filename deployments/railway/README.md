@@ -79,6 +79,7 @@ analyst variables are optional.
 | `NATS_URL` | `nats://nats.railway.internal:4222` |
 | `NATS_USER`, `NATS_PASSWORD` | must match the NATS service |
 | `OPA_URL` | `http://opa.railway.internal:8181` |
+| `GRIEFER_OPA_DECISION_PATH` | `griefer/response/decision` |
 | `GRIEFER_OPA_FAIL_CLOSED` | `true` |
 | `RESPONSE_MODE` | `simulation` |
 | `ALLOW_REAL_ACTIONS` | `false` |
@@ -88,6 +89,21 @@ analyst variables are optional.
 
 `GRIEFER_ALLOW_PUBLIC_BIND` is about the bind address, not exposure. The service
 still has no public domain; Railway only routes to it from inside the project.
+
+`GRIEFER_OPA_DECISION_PATH` is listed because getting it wrong is quiet. It was
+first deployed as `griefer/authz/decision` — the path of OPA's own authorisation
+policy, which that policy protects, so OPA answered `401`. The Policy Kernel
+fails closed, so every evaluation was correctly denied and the console looked
+like it was working: actions were refused, which is what a policy engine does.
+
+Nothing surfaced it except the audit trail, where those denials carry
+`result: policy_unavailable` rather than `result: denied`. That distinction is
+the reason the result taxonomy exists — an unreachable policy engine and a
+considered refusal are the same HTTP response and the same action status, and
+only the trail tells them apart.
+
+The value must match `policies.DecisionPath`. Local Compose sets it correctly,
+which is why this only appeared in a deployment.
 
 ### `nats` — private
 

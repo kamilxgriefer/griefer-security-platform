@@ -1,5 +1,7 @@
 import "server-only";
 
+import { actorHeaders } from "./principal";
+
 import type {
   AuditEntry,
   Incident,
@@ -66,7 +68,7 @@ async function request<T>(path: string): Promise<T> {
   try {
     response = await fetch(`${baseUrl()}${path}`, {
       signal: controller.signal,
-      headers: { Accept: "application/json", ...authHeaders() },
+      headers: { Accept: "application/json", ...authHeaders(), ...(await actorHeaders()) },
       // Incident data is live operational state. A cached SOC console is a
       // console that shows an analyst yesterday's attack.
       cache: "no-store",

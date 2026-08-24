@@ -90,7 +90,10 @@ func NewRouter(svc *Service, opts RouterOptions) http.Handler {
 	mux.Handle("GET /api/v1/entities/{id}", read("/api/v1/entities/{id}", svc.handleGetEntity))
 	mux.Handle("GET /api/v1/actions", read("/api/v1/actions", svc.handleListActions))
 	mux.Handle("GET /api/v1/actions/{id}", read("/api/v1/actions/{id}", svc.handleGetAction))
-	mux.Handle("GET /api/v1/audit", read("/api/v1/audit", svc.handleListAudit))
+	// The audit trail is administrator-only at the API as well as in the
+	// console. One layer is one bug away from being none.
+	mux.Handle("GET /api/v1/audit",
+		httpx.RequireRole(RoleAdmin)(read("/api/v1/audit", svc.handleListAudit)))
 	mux.Handle("GET /api/v1/system/status", read("/api/v1/system/status", svc.handleSystemStatus))
 
 	// Anything unmatched gets a JSON 404 rather than net/http's text default,
@@ -113,7 +116,24 @@ func NewRouter(svc *Service, opts RouterOptions) http.Handler {
 		// answer unauthenticated.
 		auth := httpx.NewServiceAuth(opts.InternalAPIToken, "/health", "/ready")
 		middleware = append(middleware, auth.Middleware)
+		// Strictly INSIDE the credential check. The operator identity arrives
+		// in a header, and a header is only worth reading once the caller has
+		// proved it is a component we deployed. Mounted in front of the auth
+		// instead, anyone who could reach the API could name themselves in the
+		// audit trail without presenting anything.
+		middleware = append(middleware, httpx.PrincipalMiddleware)
 	}
 
 	return httpx.Chain(mux, middleware...)
 }
+
+// Roles the API recognises in an asserted principal.
+//
+// These mirror console/lib/roles.ts. They are duplicated rather than shared
+// because the two run in different languages on different sides of a network
+// boundary; what keeps them honest is that a disagreement shows up as a 403 in
+// the RBAC tests rather than as a silent grant.
+const (
+	RoleAdmin   = "admin"
+	RoleAnalyst = "analyst"
+)

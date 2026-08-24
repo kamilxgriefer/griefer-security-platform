@@ -1,5 +1,6 @@
 import { consoleConfig } from "@/lib/config";
 import { currentSession } from "@/lib/currentSession";
+import { actorHeaders } from "@/lib/principal";
 import { isSameOrigin } from "@/lib/request";
 
 export const runtime = "nodejs";
@@ -120,14 +121,14 @@ async function attribute(raw: string): Promise<string | null> {
   // here is to refuse, not to forward an unattributed action.
   if (!session) return null;
 
-  return JSON.stringify({
-    ...(parsed as Record<string, unknown>),
-    requested_by: `console:${session.username}`,
-    // A person clicked a button. Nothing reaching this gateway is automated,
-    // and letting the browser claim otherwise would misreport how the action
-    // came about.
-    automated: false,
-  });
+  // The identity now travels in headers the API reads after verifying the
+  // service credential, so these body fields are stripped rather than
+  // rewritten. The API ignores them, and removing them means a console and an
+  // API deployed at different versions cannot end up disagreeing about which
+  // of the two decided who the operator was.
+  const { requested_by: _ignoredActor, automated: _ignoredAutomated, ...rest } =
+    parsed as Record<string, unknown>;
+  return JSON.stringify(rest);
 }
 
 async function handle(
@@ -196,6 +197,10 @@ async function handle(
         ...(config.internalApiToken
           ? { Authorization: `Bearer ${config.internalApiToken}` }
           : {}),
+        // Built from the session, never forwarded from the incoming request.
+        // Forwarding would let a browser name itself simply by setting the
+        // header on its call to this gateway.
+        ...(await actorHeaders()),
       },
       ...(body === undefined ? {} : { body }),
     });

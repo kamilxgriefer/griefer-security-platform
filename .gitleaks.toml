@@ -68,4 +68,10 @@ paths = [
 # durable. It cannot be invalidated by rewriting history, and it can only ever
 # match this one inert value. A different credential written into the same file,
 # the same job or the same commit is still reported.
-regexes = ['''contract-token-not-a-secret''']
+#
+# Anchored. Allowlist regexes match a SUBSTRING of the detected secret, so the
+# unanchored form would also have exempted anything CONTAINING this phrase —
+# "contract-token-not-a-secret-prod-<real value>" would have passed silently
+# while the comment above claimed only one value was exempt. The anchors are
+# what make that claim true.
+regexes = ['''^contract-token-not-a-secret$''']

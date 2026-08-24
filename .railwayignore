@@ -1,0 +1,28 @@
+# What must never enter a Railway build context.
+#
+# `railway up` uploads this directory. .gitignore already covers most of it,
+# but the cost of being wrong here is a secret leaving the machine, so the
+# exclusions that matter are repeated explicitly rather than inherited.
+
+# Local secrets.
+.env
+.env.*
+!.env.example
+*.local
+
+# Host-built output. node_modules holds macOS-native binaries that would be
+# wrong inside a Linux image; each service's build installs its own.
+node_modules
+.next
+out
+coverage
+dist
+
+# History and local tooling.
+.git
+.github
+.claude
+
+# Generated brand assets are already committed into the image contexts that
+# need them; the masters and the contact sheet are not needed to build.
+branding/generated/preview

@@ -1,4 +1,5 @@
 import { consoleConfig } from "@/lib/config";
+import { currentSession } from "@/lib/currentSession";
 import { isSameOrigin } from "@/lib/request";
 
 export const runtime = "nodejs";
@@ -87,6 +88,48 @@ function forwardableQuery(url: URL): string {
   return query ? `?${query}` : "";
 }
 
+/**
+ * Stamp a response-action request with the operator who actually asked for it.
+ *
+ * requested_by ends up in ResponseAction and in the audit trail, and it is the
+ * field that answers "who did this". It cannot come from the browser: a
+ * signed-in caller can put any string in a request body, so a client-supplied
+ * value attributes the action to whoever the client says — which makes the
+ * audit trail worse than empty, because it looks authoritative.
+ *
+ * The value is taken from the signed session cookie and overwrites whatever
+ * arrived, rather than filling in a missing field. Trusting a submitted value
+ * when one is present would leave exactly the hole this closes.
+ *
+ * Returns null if the body is not a JSON object, so a malformed request is
+ * refused here rather than forwarded to the API with the credential attached.
+ */
+async function attribute(raw: string): Promise<string | null> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+
+  const session = await currentSession();
+  // middleware.ts has already refused anonymous callers, so this is unreachable
+  // in practice. It is handled rather than asserted because an unreachable
+  // assertion becomes a crash the day the matcher changes — and the safe answer
+  // here is to refuse, not to forward an unattributed action.
+  if (!session) return null;
+
+  return JSON.stringify({
+    ...(parsed as Record<string, unknown>),
+    requested_by: `console:${session.username}`,
+    // A person clicked a button. Nothing reaching this gateway is automated,
+    // and letting the browser claim otherwise would misreport how the action
+    // came about.
+    automated: false,
+  });
+}
+
 async function handle(
   request: Request,
   context: { params: Promise<{ path: string[] }> },
@@ -125,6 +168,17 @@ async function handle(
       );
     }
     body = raw;
+
+    if (target === "actions/evaluate") {
+      const attributed = await attribute(raw);
+      if (attributed === null) {
+        return Response.json(
+          { error: { code: "bad_request", message: "Malformed request body." } },
+          { status: 400 },
+        );
+      }
+      body = attributed;
+    }
   }
 
   const controller = new AbortController();

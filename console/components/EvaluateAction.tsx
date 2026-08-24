@@ -39,8 +39,10 @@ export function EvaluateAction({
           incident_id: incidentId,
           action_type: actionType,
           mode: "simulate",
-          requested_by: "console:demo",
-          automated: false,
+          // requested_by and automated are set by the gateway from the signed
+          // session. Sending them here would be decorative at best: the server
+          // overwrites both, because a value the browser controls cannot say
+          // who performed an action.
         }),
       });
 

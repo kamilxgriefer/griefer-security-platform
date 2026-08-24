@@ -12,10 +12,14 @@ import (
 // Error codes returned by the API. They are stable identifiers a client can
 // branch on; the human-readable message is not.
 const (
-	CodeValidationFailed   = "validation_failed"
-	CodeMalformedRequest   = "malformed_request"
-	CodeNotFound           = "not_found"
-	CodeUnauthorized       = "unauthorized"
+	CodeValidationFailed = "validation_failed"
+	CodeMalformedRequest = "malformed_request"
+	CodeNotFound         = "not_found"
+	CodeUnauthorized     = "unauthorized"
+	// CodeForbidden is authenticated-but-not-permitted, as distinct from
+	// CodeUnauthorized. Collapsing the two would tell a caller with a valid
+	// credential to go and authenticate again, which is advice that cannot help.
+	CodeForbidden          = "forbidden"
 	CodePayloadTooLarge    = "payload_too_large"
 	CodeRateLimited        = "rate_limited"
 	CodeUnsupportedMedia   = "unsupported_media_type"

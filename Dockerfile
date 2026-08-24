@@ -28,6 +28,27 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
         -ldflags "-s -w" \
         -o /out/griefer-seed ./cmd/griefer-seed
 
+# --- Test -------------------------------------------------------------------
+# Opt-in: `docker build --target test .` runs the suite in the same environment
+# the image is built in.
+#
+# This sits BEFORE the runtime stage, so that runtime is the last stage in the
+# file and therefore what a build with no --target produces.
+#
+# That ordering is not cosmetic. Compose and CI both pin `target: runtime`, so
+# the mistake is invisible locally — but a platform that builds the Dockerfile
+# without a target gets whichever stage is last. Railway did exactly that, and
+# deployed this Go build environment as the console: the container started,
+# nothing listened, and the only symptom was a 502 from the edge.
+#
+# The cost is that a target-less build under the *classic* builder walks every
+# stage in order and so also runs the tests, which is slow. BuildKit — Railway,
+# CI, and any recent Docker — builds only what the target needs and skips this
+# stage entirely. A slow build is visible the moment it happens; a test-stage
+# image serving production is not, so the trade goes this way round.
+FROM build AS test
+RUN go vet ./... && go test -count=1 ./...
+
 # --- Runtime ----------------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
@@ -49,15 +70,3 @@ ENV GRIEFER_HTTP_ADDR=0.0.0.0:8080 \
 EXPOSE 8080
 
 ENTRYPOINT ["/app/griefer-api"]
-
-# --- Test -------------------------------------------------------------------
-# Opt-in: `docker build --target test .` runs the suite in the same environment
-# the image is built in.
-#
-# Placed AFTER the runtime stage on purpose. BuildKit builds only what the
-# target needs, but the classic builder walks stages in file order — so with
-# this stage earlier, every ordinary image build also ran the tests, which made
-# builds slow and coupled shipping an image to a test suite that needs no
-# container to run.
-FROM build AS test
-RUN go vet ./... && go test -count=1 ./...

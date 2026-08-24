@@ -428,10 +428,15 @@ jobs:
             echo "::error::the console image is running the API binary"
             exit 1
           fi
-          if ! docker exec console-contract cat /proc/1/cmdline | tr '\0' ' ' | grep -q 'node'; then
-            echo "::error::PID 1 in the console image is not node"
-            exit 1
-          fi
+          # Next renames its own process to "next-server (v…)", so PID 1 is not
+          # literally "node" even though it is the Node server. Both spellings
+          # are accepted; what matters is that it is the console's server and
+          # not some other binary that happened to end up in this image.
+          pid1=$(docker exec console-contract cat /proc/1/cmdline | tr '\0' ' ')
+          case "$pid1" in
+            *next-server*|*node*) : ;;
+            *) echo "::error::PID 1 in the console image is '$pid1', which is neither the Next server nor node"; exit 1 ;;
+          esac
           code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18082/login)
           echo "  /login  $code (want 200)"
           [ "$code" = "200" ] || { echo "::error::/login returned $code"; exit 1; }

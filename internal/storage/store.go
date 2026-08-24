@@ -78,6 +78,21 @@ type Store interface {
 	GetAction(ctx context.Context, id string) (*incidents.ResponseAction, error)
 	ListActions(ctx context.Context, incidentID string, limit, offset int) ([]*incidents.ResponseAction, int, error)
 
+	// SaveActionWithAudit persists a response action together with the audit
+	// entries describing its evaluation, as one unit. Either all of it is
+	// durable or none of it is.
+	//
+	// This is on the interface rather than being an optional capability a
+	// caller type-asserts for. An optional guarantee is one a caller silently
+	// loses when a store does not implement it, and "the audit trail is
+	// complete unless you happened to configure the other store" is not a
+	// guarantee worth stating. A nil action writes only the entries, which is
+	// the shape of an evaluation rejected before any action exists.
+	SaveActionWithAudit(ctx context.Context, action *incidents.ResponseAction, entries []*audit.Entry) error
+
+	// AppendAudit writes several audit entries as one unit.
+	AppendAudit(ctx context.Context, entries []*audit.Entry) error
+
 	// Ping reports whether the backing store is reachable.
 	Ping(ctx context.Context) error
 	// Close releases held resources.

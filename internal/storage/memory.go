@@ -199,11 +199,61 @@ func (s *MemoryStore) SaveAction(_ context.Context, action *incidents.ResponseAc
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.saveActionLocked(action)
+	return nil
+}
+
+// saveActionLocked assumes the caller holds the write lock.
+func (s *MemoryStore) saveActionLocked(action *incidents.ResponseAction) {
 	if _, exists := s.actions[action.ID]; !exists {
 		s.actionOrder = append(s.actionOrder, action.ID)
 	}
-	clone := deepCopyAction(action)
-	s.actions[action.ID] = clone
+	s.actions[action.ID] = deepCopyAction(action)
+}
+
+// SaveActionWithAudit implements Store.
+//
+// The memory store has no transactions, so atomicity is provided by validating
+// everything before mutating anything and then doing all the writes under a
+// single lock. That is a genuinely equivalent guarantee here: no other
+// goroutine can observe a half-applied state, and nothing can fail midway
+// because the only failures are the validation this does up front.
+//
+// It matters that the two implementations agree. The shared conformance suite
+// runs the same atomicity tests against both, so a rule that holds only in
+// PostgreSQL would be caught rather than discovered in production.
+func (s *MemoryStore) SaveActionWithAudit(_ context.Context, action *incidents.ResponseAction, entries []*audit.Entry) error {
+	if action != nil && action.ID == "" {
+		return fmt.Errorf("storage: response action requires an id")
+	}
+	for _, entry := range entries {
+		if entry == nil || entry.ID == "" {
+			return fmt.Errorf("storage: audit entry requires an id")
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if action != nil {
+		s.saveActionLocked(action)
+	}
+	for _, entry := range entries {
+		s.appendAuditLocked(entry)
+	}
+	return nil
+}
+
+// AppendAudit implements Store.
+func (s *MemoryStore) AppendAudit(_ context.Context, entries []*audit.Entry) error {
+	for _, entry := range entries {
+		if entry == nil || entry.ID == "" {
+			return fmt.Errorf("storage: audit entry requires an id")
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, entry := range entries {
+		s.appendAuditLocked(entry)
+	}
 	return nil
 }
 
@@ -261,12 +311,17 @@ func (s *MemoryStore) Append(_ context.Context, entry *audit.Entry) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.appendAuditLocked(entry)
+	return nil
+}
+
+// appendAuditLocked assumes the caller holds the write lock.
+func (s *MemoryStore) appendAuditLocked(entry *audit.Entry) {
 	s.auditSeq++
 	clone := *entry
 	clone.Sequence = s.auditSeq
 	entry.Sequence = s.auditSeq
 	s.auditLog = append(s.auditLog, &clone)
-	return nil
 }
 
 // List implements audit.Sink, returning entries oldest first so the sequence

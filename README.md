@@ -163,12 +163,26 @@ own toolchains. About 2 GB of disk and 2 GB of RAM.
 ```bash
 git clone https://github.com/kamilxgriefer/griefer-security-platform.git
 cd griefer-security-platform
-cp .env.example .env
+make secrets
 make up
 make demo
 ```
 
-Then open **<http://localhost:3000>**.
+Then open **<http://localhost:3000>** and sign in.
+
+`make secrets` generates the console accounts and the service credentials into
+`.env.local`, which `make up` requires and which is never committed. The two
+passwords are written to `~/.config/griefer/demo-credentials.txt` with mode 600
+and are deliberately not printed — not to the terminal, not to a log.
+
+You sign in as **`admin`** (sees everything, including the audit trail and the
+account list) or as **`analyst`** (dashboard and incidents only). There is no
+sign-up: accounts are provisioned, never self-registered. See
+[docs/ACCESS_CONTROL.md](docs/ACCESS_CONTROL.md).
+
+`.env.example` documents the full set of variables with placeholder values. It
+is a reference, not a working configuration — copying it produces a console that
+refuses every login, because its credentials are deliberately unusable.
 
 `make up` starts PostgreSQL, NATS JetStream, OPA, the API and the console. Every
 port is published to `127.0.0.1` only. `make demo` replays the synthetic scenario

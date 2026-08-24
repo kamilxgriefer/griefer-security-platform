@@ -5,7 +5,15 @@
 // evaluate byte-identical policy.
 package policies
 
-import "embed"
+import (
+	"crypto/sha256"
+	"embed"
+	"encoding/hex"
+	"fmt"
+	"io/fs"
+	"sort"
+	"strings"
+)
 
 // FS holds the Rego policy tree.
 //
@@ -25,3 +33,57 @@ const (
 	// Version must track policy_version in response.rego.
 	Version = "0.1.0"
 )
+
+// Revision identifies the policy tree that produced a decision.
+//
+// It is a SHA-256 over the embedded Rego source: every non-test file, visited
+// in sorted path order, with the path mixed in alongside the bytes so that
+// renaming a file changes the revision even when its contents do not.
+//
+// Why a content hash rather than the Version constant above: Version is a
+// string somebody has to remember to change. It has read "0.1.0" through every
+// edit the policy has ever had, so an audit entry stamped with it cannot tell
+// you which rules were in force. A content hash cannot be forgotten.
+//
+// Test files are excluded deliberately. They are not evaluated, and including
+// them would move the revision when nothing about the rules changed — which
+// trains people to ignore the field.
+//
+// Determinism is the whole point, so the walk is explicitly sorted rather than
+// relying on filesystem order: embed.FS happens to be sorted today, and a
+// revision that silently depended on that would be a revision that changes
+// when the standard library does.
+func Revision() string {
+	paths := make([]string, 0, 8)
+	err := fs.WalkDir(FS, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".rego") || strings.HasSuffix(path, "_test.rego") {
+			return nil
+		}
+		paths = append(paths, path)
+		return nil
+	})
+	if err != nil {
+		// Unreachable for an embedded FS, which cannot fail to be read. A
+		// sentinel rather than a panic: an audit entry that says the revision
+		// is unknown is far better than a platform that will not start.
+		return "sha256:unavailable"
+	}
+	sort.Strings(paths)
+
+	sum := sha256.New()
+	for _, path := range paths {
+		content, readErr := FS.ReadFile(path)
+		if readErr != nil {
+			return "sha256:unavailable"
+		}
+		// Length-prefixing the path stops two different file layouts hashing
+		// the same way by running their names and contents together.
+		fmt.Fprintf(sum, "%d:%s\n", len(path), path)
+		fmt.Fprintf(sum, "%d:\n", len(content))
+		sum.Write(content)
+	}
+	return "sha256:" + hex.EncodeToString(sum.Sum(nil))
+}

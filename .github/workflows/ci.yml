@@ -340,7 +340,11 @@ jobs:
         run: docker build -f Dockerfile -t griefer-api:contract .
 
       - name: Build the console image as the platform builds it
-        run: docker build -f Dockerfile -t griefer-console:contract ./console
+        # -f is resolved against the working directory, NOT against the build
+        # context, so "-f Dockerfile ./console" builds the API's Dockerfile with
+        # the console's files. This job was written with that mistake in it,
+        # which is a fair demonstration of why it exists.
+        run: docker build -f console/Dockerfile -t griefer-console:contract ./console
 
       - name: The API image runs the API
         run: |
@@ -358,12 +362,16 @@ jobs:
           fi
 
       - name: The API image refuses unauthenticated calls
+        env:
+          # Not a secret: a throwaway value this job invents so it can prove the
+          # gate opens for a correct credential as well as closing for none.
+          CONTRACT_TOKEN: not-a-real-credential-${{ github.run_id }}
         run: |
           set -euo pipefail
           docker run -d --name api-contract -p 18081:8080 \
             -e GRIEFER_HTTP_ADDR=0.0.0.0:8080 \
             -e GRIEFER_ALLOW_PUBLIC_BIND=true \
-            -e INTERNAL_API_TOKEN=contract-token-not-a-secret \
+            -e INTERNAL_API_TOKEN="$CONTRACT_TOKEN" \
             griefer-api:contract
           for _ in $(seq 1 40); do
             curl -sf http://127.0.0.1:18081/health >/dev/null && break
@@ -380,8 +388,12 @@ jobs:
           check 401 http://127.0.0.1:18081/metrics          "/metrics without a token"
           # And the same call succeeds once the credential is presented, so the
           # 401s above are the gate working rather than the service being down.
+          # The value comes from the environment rather than the command line:
+          # a literal bearer token here is indistinguishable, to a secret
+          # scanner, from a real one — and teaching the scanner to ignore this
+          # file is how a real credential eventually gets committed.
           code=$(curl -s -o /dev/null -w '%{http_code}' \
-            -H 'Authorization: Bearer contract-token-not-a-secret' \
+            -H "Authorization: Bearer $CONTRACT_TOKEN" \
             http://127.0.0.1:18081/api/v1/incidents)
           echo "  /api/v1/incidents with a token   $code (want 200)"
           [ "$code" = "200" ] || { echo "::error::authenticated call returned $code"; exit 1; }

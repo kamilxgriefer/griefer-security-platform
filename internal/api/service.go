@@ -672,13 +672,6 @@ func joinReasons(reasons []string) string {
 	}
 }
 
-func defaultString(v, fallback string) string {
-	if v == "" {
-		return fallback
-	}
-	return v
-}
-
 func boolLabel(b bool) string {
 	if b {
 		return "true"

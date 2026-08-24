@@ -81,9 +81,13 @@ func Revision() string {
 		}
 		// Length-prefixing the path stops two different file layouts hashing
 		// the same way by running their names and contents together.
-		fmt.Fprintf(sum, "%d:%s\n", len(path), path)
-		fmt.Fprintf(sum, "%d:\n", len(content))
-		sum.Write(content)
+		//
+		// The errors are discarded deliberately: hash.Hash documents that Write
+		// never returns one, so checking them would add a branch that cannot be
+		// taken and cannot be tested.
+		_, _ = fmt.Fprintf(sum, "%d:%s\n", len(path), path)
+		_, _ = fmt.Fprintf(sum, "%d:\n", len(content))
+		_, _ = sum.Write(content)
 	}
 	return "sha256:" + hex.EncodeToString(sum.Sum(nil))
 }

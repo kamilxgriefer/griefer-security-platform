@@ -329,7 +329,7 @@ func TestEveryEvaluationOutcomeIsRecordedWithItsResultInTheAuditTrail(t *testing
 					t.Errorf("%s: Details[\"response_action_id\"] = %q but SubjectID = %q", where, got, entry.SubjectID)
 				}
 
-				assertNoSecretDetailKeys(t, where, map[string]any(entry.Details))
+				assertNoSecretDetailKeys(t, where, entry.Details)
 			}
 		})
 	}
@@ -368,7 +368,7 @@ func TestTheRealPolicyKernelRecordsASimulatedActionAsAllowed(t *testing.T) {
 		if entry.RequestID == "" {
 			t.Errorf("entry %d (%s): RequestID is empty", i, entry.Action)
 		}
-		assertNoSecretDetailKeys(t, fmt.Sprintf("entry %d (%s)", i, entry.Action), map[string]any(entry.Details))
+		assertNoSecretDetailKeys(t, fmt.Sprintf("entry %d (%s)", i, entry.Action), entry.Details)
 	}
 }
 

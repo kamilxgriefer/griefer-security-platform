@@ -242,21 +242,6 @@ func (s *MemoryStore) SaveActionWithAudit(_ context.Context, action *incidents.R
 	return nil
 }
 
-// AppendAudit implements Store.
-func (s *MemoryStore) AppendAudit(_ context.Context, entries []*audit.Entry) error {
-	for _, entry := range entries {
-		if entry == nil || entry.ID == "" {
-			return fmt.Errorf("storage: audit entry requires an id")
-		}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, entry := range entries {
-		s.appendAuditLocked(entry)
-	}
-	return nil
-}
-
 // GetAction implements Store.
 func (s *MemoryStore) GetAction(_ context.Context, id string) (*incidents.ResponseAction, error) {
 	s.mu.RLock()

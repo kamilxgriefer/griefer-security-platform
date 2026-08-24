@@ -90,9 +90,6 @@ type Store interface {
 	// the shape of an evaluation rejected before any action exists.
 	SaveActionWithAudit(ctx context.Context, action *incidents.ResponseAction, entries []*audit.Entry) error
 
-	// AppendAudit writes several audit entries as one unit.
-	AppendAudit(ctx context.Context, entries []*audit.Entry) error
-
 	// Ping reports whether the backing store is reachable.
 	Ping(ctx context.Context) error
 	// Close releases held resources.

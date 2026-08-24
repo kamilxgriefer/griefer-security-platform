@@ -334,21 +334,6 @@ func (s *PostgresStore) SaveActionWithAudit(ctx context.Context, action *inciden
 	})
 }
 
-// AppendAudit implements Store, for outcomes that produce no response action.
-func (s *PostgresStore) AppendAudit(ctx context.Context, entries []*audit.Entry) error {
-	if len(entries) == 0 {
-		return nil
-	}
-	return s.inTx(ctx, func(tx querier) error {
-		for _, entry := range entries {
-			if err := appendAudit(ctx, tx, entry); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
 // inTx runs fn inside a transaction, rolling back on any error.
 //
 // The rollback uses context.WithoutCancel: when the failure is a cancelled or

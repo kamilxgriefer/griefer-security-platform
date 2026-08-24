@@ -322,6 +322,120 @@ jobs:
           docker compose --env-file .env.example -f docker-compose.yml config -q \
             && echo "docker-compose.yml is valid"
 
+  deployment-image-contract:
+    name: Deployment image contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Static contract checks
+        run: ./scripts/verify-image-contract.sh
+
+      # Built exactly the way the platform builds them: the Dockerfile named in
+      # deployments/railway/*.json, that file's own context, and NO --target.
+      # Passing --target here would test something the platform never produces,
+      # which is precisely how the console came to run the API's build stage.
+      - name: Build the API image as the platform builds it
+        run: docker build -f Dockerfile -t griefer-api:contract .
+
+      - name: Build the console image as the platform builds it
+        run: docker build -f Dockerfile -t griefer-console:contract ./console
+
+      - name: The API image runs the API
+        run: |
+          set -euo pipefail
+          # A distroless image has no shell, so PID 1 is inspected from outside.
+          entrypoint=$(docker inspect -f '{{json .Config.Entrypoint}}' griefer-api:contract)
+          echo "entrypoint: $entrypoint"
+          case "$entrypoint" in
+            *griefer-api*) echo "ok: entrypoint is the API binary" ;;
+            *) echo "::error::API image entrypoint is $entrypoint"; exit 1 ;;
+          esac
+          if printf '%s' "$entrypoint" | grep -qi 'go\b\|/usr/local/go'; then
+            echo "::error::API image entrypoint looks like a Go toolchain, not the service"
+            exit 1
+          fi
+
+      - name: The API image refuses unauthenticated calls
+        run: |
+          set -euo pipefail
+          docker run -d --name api-contract -p 18081:8080 \
+            -e GRIEFER_HTTP_ADDR=0.0.0.0:8080 \
+            -e GRIEFER_ALLOW_PUBLIC_BIND=true \
+            -e INTERNAL_API_TOKEN=contract-token-not-a-secret \
+            griefer-api:contract
+          for _ in $(seq 1 40); do
+            curl -sf http://127.0.0.1:18081/health >/dev/null && break
+            sleep 1
+          done
+          check() {
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$2")
+            printf '  %-34s %s (want %s)\n' "$3" "$code" "$1"
+            [ "$code" = "$1" ] || { echo "::error::$3 returned $code"; exit 1; }
+          }
+          check 200 http://127.0.0.1:18081/health           "/health without a token"
+          check 200 http://127.0.0.1:18081/ready            "/ready without a token"
+          check 401 http://127.0.0.1:18081/api/v1/incidents "/api/v1/* without a token"
+          check 401 http://127.0.0.1:18081/metrics          "/metrics without a token"
+          # And the same call succeeds once the credential is presented, so the
+          # 401s above are the gate working rather than the service being down.
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H 'Authorization: Bearer contract-token-not-a-secret' \
+            http://127.0.0.1:18081/api/v1/incidents)
+          echo "  /api/v1/incidents with a token   $code (want 200)"
+          [ "$code" = "200" ] || { echo "::error::authenticated call returned $code"; exit 1; }
+
+      - name: The API image shuts down gracefully
+        run: |
+          set -euo pipefail
+          docker stop -t 20 api-contract >/dev/null
+          code=$(docker inspect -f '{{.State.ExitCode}}' api-contract)
+          echo "  exit code after SIGTERM: $code"
+          # 143 is SIGTERM-killed: the process ignored the signal and was killed
+          # after the timeout, which is not a graceful shutdown.
+          [ "$code" = "0" ] || { echo "::error::API did not exit cleanly on SIGTERM (code $code)"; exit 1; }
+
+      - name: The console image runs the console
+        run: |
+          set -euo pipefail
+          docker run -d --name console-contract -p 18082:3000 \
+            -e NODE_ENV=production \
+            -e DEMO_SESSION_SECRET=contract-session-secret-at-least-32-chars \
+            -e GRIEFER_ADMIN_USERNAME=admin \
+            -e GRIEFER_ADMIN_PASSWORD_SALT=00 \
+            -e GRIEFER_ADMIN_PASSWORD_HASH=00 \
+            griefer-console:contract
+          for _ in $(seq 1 40); do
+            curl -sf http://127.0.0.1:18082/login >/dev/null && break
+            sleep 1
+          done
+          echo "  PID 1:"
+          docker exec console-contract cat /proc/1/cmdline | tr '\0' ' '; echo
+          if docker exec console-contract cat /proc/1/cmdline | tr '\0' ' ' | grep -q 'griefer-api'; then
+            echo "::error::the console image is running the API binary"
+            exit 1
+          fi
+          if ! docker exec console-contract cat /proc/1/cmdline | tr '\0' ' ' | grep -q 'node'; then
+            echo "::error::PID 1 in the console image is not node"
+            exit 1
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18082/login)
+          echo "  /login  $code (want 200)"
+          [ "$code" = "200" ] || { echo "::error::/login returned $code"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18082/)
+          echo "  /       $code (want 307, the redirect to /login)"
+          [ "$code" = "307" ] || { echo "::error::/ returned $code"; exit 1; }
+          # The container must still be running: an image that exits 0 without
+          # ever serving would pass every check above that only looks at logs.
+          state=$(docker inspect -f '{{.State.Running}}' console-contract)
+          echo "  still running: $state"
+          [ "$state" = "true" ] || { echo "::error::console container is not running"; exit 1; }
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f api-contract console-contract >/dev/null 2>&1 || true
+
   compose-e2e:
     name: Compose end-to-end
     runs-on: ubuntu-latest

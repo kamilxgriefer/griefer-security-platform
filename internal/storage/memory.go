@@ -318,10 +318,35 @@ func (s *MemoryStore) Append(_ context.Context, entry *audit.Entry) error {
 // appendAuditLocked assumes the caller holds the write lock.
 func (s *MemoryStore) appendAuditLocked(entry *audit.Entry) {
 	s.auditSeq++
-	clone := *entry
+	clone := deepCopyAuditEntry(entry)
 	clone.Sequence = s.auditSeq
 	entry.Sequence = s.auditSeq
-	s.auditLog = append(s.auditLog, &clone)
+	s.auditLog = append(s.auditLog, clone)
+}
+
+// deepCopyAuditEntry severs every reference the caller could still hold.
+//
+// A struct copy is not enough: Details is a map, so `clone := *entry` leaves
+// the stored entry sharing the caller's map header. Anyone keeping their
+// pointer could then rewrite a committed entry — turning a denial into an
+// approval — without calling the store at all, which defeats the append-only
+// guarantee the PostgreSQL trigger exists to provide. PostgreSQL is immune
+// because it marshals Details to JSON at write time; the memory store has to
+// copy deliberately.
+//
+// Values inside Details are not themselves cloned. They are identifiers,
+// verdicts and counts by contract (see internal/audit), and a deep clone of
+// arbitrary any-typed values would need reflection for a case this package
+// does not accept in the first place.
+func deepCopyAuditEntry(in *audit.Entry) *audit.Entry {
+	out := *in
+	if in.Details != nil {
+		out.Details = make(map[string]any, len(in.Details))
+		for k, v := range in.Details {
+			out.Details[k] = v
+		}
+	}
+	return &out
 }
 
 // List implements audit.Sink, returning entries oldest first so the sequence
@@ -344,8 +369,9 @@ func (s *MemoryStore) List(_ context.Context, limit, offset int) ([]*audit.Entry
 	}
 	page := make([]*audit.Entry, 0, end-offset)
 	for _, e := range s.auditLog[offset:end] {
-		clone := *e
-		page = append(page, &clone)
+		// Copied on the way out for the same reason as on the way in: a reader
+		// handed a live reference could edit the trail it was given to read.
+		page = append(page, deepCopyAuditEntry(e))
 	}
 	return page, total, nil
 }

@@ -52,19 +52,20 @@ paths = [
 
 # One historical finding that cannot be removed and must not be hidden broadly.
 #
-# Commit 21f2c49 wrote an inline `Authorization: Bearer <literal>` into a CI
-# job. The literal was "contract-token-not-a-secret" — a value that job
-# invented so it could prove the API's gate OPENS for a correct credential as
-# well as closing for none. It granted nothing and was never valid anywhere.
+# A commit in this branch's history wrote an inline `Authorization: Bearer
+# <literal>` into a CI job. The literal was "contract-token-not-a-secret" — a
+# value that job invented so it could prove the API's gate OPENS for a correct
+# credential as well as closing for none. It granted nothing and was never valid
+# anywhere. The next commit stopped writing credential-shaped literals at all;
+# the value now comes from the environment.
 #
-# gitleaks was right to flag it. A scanner cannot tell a throwaway from a real
-# credential, and that inability is what makes it useful. The very next commit
-# stopped writing credential-shaped literals at all — the value now comes from
-# the environment. But 21f2c49 is already in a pushed branch, and removing it
-# would mean rewriting published history.
+# This was first scoped to that commit's SHA. That was wrong, and it failed the
+# moment the branch was rebase-merged: rebasing rewrites SHAs, so the exception
+# pointed at a commit that no longer existed while the finding lived on under a
+# new one.
 #
-# Scoped to that ONE commit: not the file, not the rule, not the path, any of
-# which would also hide the next real credential written there. A
-# commit-scoped exception cannot hide a future secret, because a future secret
-# arrives in a different commit.
-commits = ["21f2c49c1a8585fa195aaeae98f8f0bc10b92707"]
+# It is scoped to the literal string instead — both more precise and more
+# durable. It cannot be invalidated by rewriting history, and it can only ever
+# match this one inert value. A different credential written into the same file,
+# the same job or the same commit is still reported.
+regexes = ['''contract-token-not-a-secret''']

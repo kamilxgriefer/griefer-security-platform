@@ -185,6 +185,14 @@ export interface AuditEntry {
   sequence: number;
   timestamp: string;
   actor: string;
+  /**
+   * The role the actor held when the entry was written.
+   *
+   * Absent on entries the platform wrote for itself, and on entries written
+   * before the field existed. Optional for that reason rather than because it
+   * is unimportant.
+   */
+  actor_role?: "admin" | "analyst";
   action: string;
   subject_type: string;
   subject_id: string;

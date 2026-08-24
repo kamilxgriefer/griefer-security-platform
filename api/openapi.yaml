@@ -445,6 +445,20 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorResponse" }
 
+  securitySchemes:
+    serviceCredential:
+      type: http
+      scheme: bearer
+      description: |
+        A shared credential proving the caller is a component of this platform —
+        the console's server-side gateway or the seeder. It is NOT a user
+        credential and cannot identify a person; the operator travels separately
+        in `X-Griefer-Actor`, which the API reads only after this credential has
+        been verified.
+
+        `/health` and `/ready` are exempt, because a platform must be able to
+        probe liveness before it has any credential to present.
+
   schemas:
     ErrorResponse:
       type: object
@@ -787,11 +801,25 @@ components:
           description: |
             `execute` is accepted so the policy contract can be exercised, and
             always resolves to `requires_approval`: v0.1 ships no actuator.
-        requested_by: { type: string }
+        requested_by:
+          type: string
+          deprecated: true
+          description: |
+            **Ignored.** The operator is derived server-side from the signed
+            console session, never from this field. It remains in the schema only
+            so an older client sending it is not rejected; the value is
+            discarded. A request body is written by whoever made the call, so
+            attributing an action to a value it chose would make the audit trail
+            look authoritative while saying nothing.
         automated:
           type: boolean
           default: false
-          description: True when GRIEFER itself initiated the request. Automated requests are held to a higher bar.
+          deprecated: true
+          description: |
+            **Ignored when the request carries an operator.** It selects which
+            corroboration bar the policy applies, so a caller able to set it
+            could choose the bar it is judged against. A request made on behalf
+            of a person is not automated, by definition.
 
     PolicyDecision:
       type: object
@@ -826,7 +854,14 @@ components:
           description: |
             `simulated` means policy allowed it and GRIEFER computed the effect
             it *would* have had. Nothing outside GRIEFER changed.
-        requested_by: { type: string }
+        requested_by:
+          type: string
+          readOnly: true
+          example: "console:analyst"
+          description: |
+            Server-derived: the operator taken from the signed session that made
+            the request, or `system:griefer` for work the platform did on
+            nobody's behalf. Never accepted from a request body.
         policy_decision: { $ref: "#/components/schemas/PolicyDecision" }
         reason: { type: string }
         reversible: { type: boolean }
@@ -852,7 +887,19 @@ components:
         id: { type: string }
         sequence: { type: integer, description: Assigned by the store; strictly increasing. }
         timestamp: { type: string, format: date-time }
-        actor: { type: string, example: "system:griefer" }
+        actor:
+          type: string
+          example: "console:analyst"
+          description: Server-derived operator, or `system:griefer` for platform work.
+        actor_role:
+          type: string
+          enum: [admin, analyst]
+          description: |
+            The role held at the time of the entry. Recorded rather than resolved
+            when the trail is read: an account demoted later must not
+            retroactively appear to have acted with a different role. Absent on
+            entries written by the platform itself and on entries predating this
+            field.
         action:
           type: string
           enum:

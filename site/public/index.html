@@ -151,6 +151,27 @@
   .about p { margin: 0 0 0.75rem; }
   .about p:last-child { margin-bottom: 0; }
 
+  .actions { margin: 26px 0 0; }
+  .signin {
+    display: inline-block;
+    padding: 11px 26px;
+    border: 1px solid var(--cyan);
+    border-radius: 999px;
+    color: var(--cyan);
+    font-size: 14px;
+    letter-spacing: 0.04em;
+    text-decoration: none;
+    transition: background-color 120ms ease, color 120ms ease;
+  }
+  .signin:hover, .signin:focus-visible {
+    background: var(--cyan);
+    color: var(--field);
+  }
+  /* The focus ring is drawn explicitly: the hover rule inverts the colours, and
+     without this a keyboard user landing on the link would see the same thing a
+     mouse user sees on hover, with nothing marking it as focused. */
+  .signin:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+
   footer {
     margin-top: 2.75rem;
     font-size: 0.78rem;
@@ -178,11 +199,17 @@
 
   <p class="status">Early development</p>
 
+  <p class="actions">
+    <a class="signin" href="https://console-production-b3ea.up.railway.app/login"
+       rel="noopener">Sign in to the console</a>
+  </p>
+
   <div class="notice">
     <p><strong>Private development environment.</strong> Synthetic-data and simulation-only project.</p>
     <p>
-      The platform is not publicly reachable. There is no public API, no public database and no
-      hosted console at this address. A public demonstration will be published later.
+      A demonstration console is reachable by sign-in. Accounts are issued, not self-registered —
+      there is no sign-up. The platform behind it stays private: no public API, no public database,
+      no public message broker or policy engine.
     </p>
   </div>
 

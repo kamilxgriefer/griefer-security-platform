@@ -1,6 +1,7 @@
 package httpx_test
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"net/http"
@@ -241,4 +242,54 @@ func TestChainAppliesMiddlewareOutermostFirst(t *testing.T) {
 			t.Fatalf("order = %v, want %v", order, want)
 		}
 	}
+}
+
+// TestAQuietPathStillLogsItsRefusals.
+//
+// /metrics requires the service credential and was skipped from the access log
+// unconditionally. It is not instrumented either — promhttp serves it directly
+// rather than through the metrics wrapper — so a caller with nothing but network
+// reach could guess INTERNAL_API_TOKEN against it at full speed and leave no
+// access-log line, no counter and no rate-limit state.
+//
+// The quiet is for successful scrapes every fifteen seconds. It is not for
+// somebody without a credential knocking.
+func TestAQuietPathStillLogsItsRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		want   bool
+	}{
+		{"a successful scrape stays quiet", http.StatusOK, false},
+		{"an unauthorised scrape is logged", http.StatusUnauthorized, true},
+		{"a forbidden scrape is logged", http.StatusForbidden, true},
+		{"a failing scrape is logged", http.StatusInternalServerError, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			handler := httpx.AccessLog(logger, "/metrics")(http.HandlerFunc(
+				func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(tc.status) }))
+
+			req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			logged := strings.Contains(buf.String(), "http request")
+			if logged != tc.want {
+				t.Errorf("logged = %v for status %d, want %v.\nOutput: %s",
+					logged, tc.status, tc.want, buf.String())
+			}
+		})
+	}
+
+	t.Run("an ordinary path is logged either way", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		handler := httpx.AccessLog(logger, "/metrics")(http.HandlerFunc(
+			func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/events", nil))
+		if !strings.Contains(buf.String(), "http request") {
+			t.Error("an ordinary successful request was not logged")
+		}
+	})
 }

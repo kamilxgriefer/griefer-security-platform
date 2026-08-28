@@ -144,6 +144,18 @@ func (w *statusRecorder) Write(b []byte) (int, error) {
 }
 
 // AccessLog emits one structured line per request.
+//
+// skipPaths quiets the paths a monitoring system hits every few seconds, and it
+// quiets them ONLY when they succeed. A refusal on a quiet path is still
+// logged.
+//
+// The distinction is the whole point of the change that introduced it. /metrics
+// requires the service credential and was skipped unconditionally, and it is
+// not instrumented either, being served by promhttp rather than through the
+// metrics wrapper. So a caller with nothing but network reach could guess
+// INTERNAL_API_TOKEN against it at full speed and produce no access-log line,
+// no counter and no rate-limit state — the one endpoint where being refused
+// left no trace at all.
 func AccessLog(logger *slog.Logger, skipPaths ...string) func(http.Handler) http.Handler {
 	skip := make(map[string]bool, len(skipPaths))
 	for _, p := range skipPaths {
@@ -151,15 +163,17 @@ func AccessLog(logger *slog.Logger, skipPaths ...string) func(http.Handler) http
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if skip[r.URL.Path] {
-				next.ServeHTTP(w, r)
-				return
-			}
 			start := time.Now()
 			rec := &statusRecorder{ResponseWriter: w}
 			next.ServeHTTP(rec, r)
 			if rec.status == 0 {
 				rec.status = http.StatusOK
+			}
+			// A successful scrape of a quiet path says nothing worth a line
+			// every fifteen seconds. A refused one says somebody without a
+			// credential is knocking.
+			if skip[r.URL.Path] && rec.status < 400 {
+				return
 			}
 			level := slog.LevelInfo
 			if rec.status >= 500 {

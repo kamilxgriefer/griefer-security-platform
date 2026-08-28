@@ -523,25 +523,16 @@ func TestAtomicallyWrittenEntriesReadBackInSequenceOrderWithActorRoleKept(t *tes
 func TestACommittedEntryCannotBeChangedByMutatingTheCallersCopy(t *testing.T) {
 	for _, f := range factories(t) {
 		t.Run(f.name, func(t *testing.T) {
-			if f.name == "memory" {
-				// BUG (not fixed here, per the task's rules): MemoryStore
-				// aliases the caller's Details map into the store.
-				//
-				// internal/storage/memory.go, appendAuditLocked, does
-				// `clone := *entry` — a shallow struct copy. Entry.Details is a
-				// map, so the "clone" shares the caller's map header. List then
-				// does the same shallow copy on the way out, so a reader sees
-				// whatever the original caller most recently wrote. The fix is a
-				// deep copy of Details on write, next to the deepCopyIncident /
-				// deepCopyAction helpers that already exist in that file for
-				// exactly this reason.
-				//
-				// PostgresStore is unaffected: appendAudit json.Marshals Details
-				// at write time, so the stored bytes stop tracking the caller.
-				// The subtest below therefore runs for real against postgres and
-				// guards it against regressing to the memory store's behaviour.
-				t.Skip("known bug: MemoryStore.appendAuditLocked shallow-copies Entry, aliasing Details")
-			}
+			// This used to skip the memory store, which aliased the caller's
+			// Details map into the store. It does not any more:
+			// appendAuditLocked stores the freshly decoded value tree and
+			// deepCopyAuditEntry recurses over it, so nothing the caller still
+			// holds reaches a committed entry.
+			//
+			// The skip could not stay once entries were chained. An aliased
+			// Details would leave a committed entry whose hash no longer
+			// matched its own content — which verify reports as tampering, on a
+			// row nobody touched.
 
 			store := f.open(t)
 			ctx := context.Background()

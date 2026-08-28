@@ -118,7 +118,11 @@ milestone does not close on a half — see
 - [x] `prev_hash` and `entry_hash` chaining over canonical serialisation
 - [ ] Periodic chain-head anchoring to append-only external storage — chaining
       alone is insufficient, since whoever can rewrite the table can rewrite the
-      chain
+      chain. **Partially addressed:** `GET`/`POST /api/v1/audit/anchor` hand the
+      operator an anchor to keep elsewhere and check back, which catches exactly
+      that rewrite — when somebody takes one. The box stays open because the
+      automated half, under an authority separate from the database, does not
+      exist. See [ADR 0008](adr/0008-operator-held-audit-anchors.md)
 - [x] `GET /api/v1/audit/verify` returning the first broken link
 - [ ] Producer authentication (mTLS or signed tokens), closing **T1**
 

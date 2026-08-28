@@ -104,6 +104,21 @@ type Store interface {
 	// configured is not a check worth stating.
 	VerifyAuditChain(ctx context.Context, limit, offset int) (*AuditChainReport, error)
 
+	// IssueAuditAnchor returns a commitment to the trail's current head, for the
+	// operator to keep outside this database.
+	//
+	// On the interface rather than beside it for the reason above: an integrity
+	// control a caller silently loses depending on which store was configured is
+	// not a control worth stating.
+	IssueAuditAnchor(ctx context.Context) (*AuditAnchor, error)
+
+	// CheckAuditAnchor compares a previously issued anchor against the trail.
+	//
+	// This is the only check in the platform that can catch a consistent rewrite
+	// of the whole chain, because it is the only one whose reference value did
+	// not come out of the database being checked.
+	CheckAuditAnchor(ctx context.Context, anchor AuditAnchor) (*AuditAnchorReport, error)
+
 	// Ping reports whether the backing store is reachable.
 	Ping(ctx context.Context) error
 	// Close releases held resources.

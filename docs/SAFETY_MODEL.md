@@ -309,11 +309,26 @@ caught by the content check, and the content check runs over a bounded window.
 `verify` finds it immediately while the altered row is recent, and further back
 it has to be swept for, page by page. The row stays altered and stays findable;
 what is bounded is how much one call recomputes. The response says which
-sequence range it examined, and warns when that was less than the whole chain. It is not evidence
-against the database role itself. One thing survives even that: an `entry_hash`
-recorded anywhere outside this database disagrees with the rewritten chain, so a
-single exported page is enough to catch it. That is a real property and a thin
-one, because it depends on someone having kept a copy.
+sequence range it examined, and warns when that was less than the whole chain.
+
+None of that, by itself, is evidence against the database role. A rewrite of the
+whole suffix produces a trail that `verify` — which has nothing to compare
+against but the chain — reports as consistent.
+
+**An anchor is what makes it evidence against that role too.**
+`GET /api/v1/audit/anchor` issues a commitment to the trail's head, a sequence
+and an `entry_hash`, for the operator to keep somewhere this database does not
+reach. `entry_hash` covers `prev_hash`, which covers its predecessor's, back to
+the genesis, so one anchor pins **every entry at or before it**: rewrite any of
+them and the operator's copy disagrees. `POST /api/v1/audit/anchor` performs
+that comparison, and `TestAnAnchorSurvivesTheRewriteThatDefeatsTheChain` proves
+it against a real database.
+
+The condition is the whole thing, and travels with the claim: **only if an
+anchor was taken, and only if it was kept outside GRIEFER.** If nobody takes
+one, or it is pasted into a GRIEFER page, the property is back to nothing —
+which is why the anchor carries its own instruction on the wire rather than in a
+document. See [ADR 0008](adr/0008-operator-held-audit-anchors.md).
 
 Four limits follow from the mechanism and are not fixed by more hashing:
 
@@ -342,10 +357,12 @@ Four limits follow from the mechanism and are not fixed by more hashing:
   attest to nothing about the past. They are reported as `unchained`, which means
   covered by neither check.
 
-**Still M4:** periodic anchoring of the chain head to append-only external
-storage. Comparing the head against a value the database role cannot reach is
-what turns *consistent* into *unaltered*. Until it lands, do not call this trail
-tamper-evident without saying against whom.
+**Still M4:** *automated* anchoring, to append-only storage under an authority
+separate from the database. What ships today puts a person in that role, which
+is real and is weaker: it happens only when someone does it. Until the automated
+form lands, do not call this trail tamper-evident without saying against whom —
+and, where an anchor is what you are relying on, without saying whether one was
+taken.
 
 The decision, its cost and the alternatives are in
 [ADR 0007](adr/0007-hash-chained-audit-without-anchor.md). How to read a

@@ -219,6 +219,83 @@ func (r *AuditChainReport) settleStatus(totalEntries, chainedEntries int64) {
 }
 
 // ---------------------------------------------------------------------------
+// Operator-held anchors
+// ---------------------------------------------------------------------------
+
+// AuditAnchor is a commitment to the trail at one point, issued so the operator
+// can keep it OUTSIDE this database.
+//
+// It is the answer to the question the chain cannot answer about itself. The
+// canonical form is public and no secret enters it, so a role that can write to
+// audit_log can alter an entry and recompute every hash after it -- and verify,
+// reading only this database, reports the result intact. An anchor is a copy of
+// one link held somewhere that role does not reach.
+//
+// One anchor pins EVERY entry at or before it. entry_hash covers prev_hash,
+// which covers its predecessor's, all the way to the genesis; so altering any
+// entry in the prefix changes the anchored hash, and the operator's copy
+// disagrees. That is the whole mechanism, and it is worth nothing unless the
+// copy is kept somewhere the database's attacker cannot reach.
+type AuditAnchor struct {
+	ChainID   string    `json:"chain_id"`
+	Sequence  int64     `json:"sequence"`
+	EntryHash string    `json:"entry_hash"`
+	IssuedAt  time.Time `json:"issued_at"`
+	// Entries is how many chained entries existed when this was issued, so a
+	// later comparison can say how much the trail has grown.
+	Entries int64  `json:"entries"`
+	Store   string `json:"store"`
+	Keep    string `json:"keep"`
+}
+
+// AnchorKeepInstruction rides on every issued anchor.
+//
+// An anchor left in the system it describes is not evidence of anything. The
+// instruction is part of the artefact because the artefact is useless without
+// it, and a README is not where someone looks while copying a JSON blob.
+const AnchorKeepInstruction = "Store this outside GRIEFER's database — a ticket, a chat message, another " +
+	"system's log. It pins every audit entry at or before this sequence. Kept here, it proves nothing."
+
+// Verdicts a checked anchor can return.
+const (
+	AnchorIntact = "intact"
+	// AnchorEntryAltered is the finding the internal chain cannot produce: the
+	// anchored entry is still there and no longer hashes to what was issued, so
+	// the prefix was rewritten by something that could also rewrite the chain.
+	AnchorEntryAltered = "entry_altered"
+	// AnchorEntryMissing is the anchored entry gone.
+	AnchorEntryMissing = "entry_missing"
+	// AnchorForeignChain is an anchor from a different trail: usually the wrong
+	// deployment, occasionally a restore into the wrong database.
+	AnchorForeignChain = "foreign_chain"
+	// AnchorMalformed is an anchor this endpoint cannot read.
+	AnchorMalformed = "malformed"
+)
+
+// AuditAnchorReport is the answer to a checked anchor.
+type AuditAnchorReport struct {
+	Verdict string `json:"verdict"`
+	Store   string `json:"store"`
+	// ChainID is the trail that answered, which may not be the anchored one.
+	ChainID  string `json:"chain_id"`
+	Sequence int64  `json:"sequence"`
+	// ExpectedHash is what the operator presented; FoundHash is what the trail
+	// holds now. Both are reported so the difference is on its face.
+	ExpectedHash string `json:"expected_hash"`
+	FoundHash    string `json:"found_hash,omitempty"`
+	// EntriesSince counts chained entries added after the anchored one. It is
+	// informational: an anchor says nothing about entries written after it.
+	EntriesSince int64  `json:"entries_since"`
+	Detail       string `json:"detail"`
+	Attests      string `json:"attests"`
+}
+
+// AnchorAttests is returned on every anchor check.
+const AnchorAttests = "That every entry at or before the anchored sequence is unchanged since the anchor " +
+	"was issued — provided the anchor was kept outside this database. It says nothing about entries " +
+	"written after it, and nothing about entries that were never written."
+
+// ---------------------------------------------------------------------------
 // PostgreSQL
 // ---------------------------------------------------------------------------
 
@@ -647,5 +724,214 @@ func (s *MemoryStore) VerifyAuditChain(_ context.Context, limit, offset int) (*A
 	}
 
 	report.settleStatus(total, chained)
+	return report, nil
+}
+
+// ---------------------------------------------------------------------------
+// Anchors — PostgreSQL
+// ---------------------------------------------------------------------------
+
+// IssueAuditAnchor implements Store.
+func (s *PostgresStore) IssueAuditAnchor(ctx context.Context) (*AuditAnchor, error) {
+	// One snapshot, for the same reason VerifyAuditChain takes one: an anchor
+	// naming a sequence and a hash read a moment apart could name a pair that
+	// never existed together, and an anchor that was wrong when issued is worse
+	// than none, because it will read as tampering forever.
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("storage: begin anchor issue: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	var chainID string
+	if err := tx.QueryRow(ctx, `SELECT chain_id FROM audit_chain_head WHERE only_row`).Scan(&chainID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("storage: audit_chain_head has no row; run the schema migration against this database")
+		}
+		return nil, fmt.Errorf("storage: read chain id: %w", err)
+	}
+
+	var (
+		seq     int64
+		hash    string
+		entries int64
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT sequence, entry_hash,
+		       (SELECT count(*) FROM audit_log WHERE entry_hash IS NOT NULL AND chain_id = $1)
+		FROM audit_log
+		 WHERE entry_hash IS NOT NULL AND chain_id = $1
+		 ORDER BY sequence DESC LIMIT 1`, chainID).Scan(&seq, &hash, &entries)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// An anchor on an empty chain would commit to nothing, and a caller
+		// storing it would believe they held something.
+		return nil, fmt.Errorf("storage: the audit chain holds no entries yet, so there is nothing to anchor")
+	case err != nil:
+		return nil, fmt.Errorf("storage: read chain head for anchor: %w", err)
+	}
+
+	return &AuditAnchor{
+		ChainID: chainID, Sequence: seq, EntryHash: hash,
+		IssuedAt: time.Now().UTC(), Entries: entries,
+		Store: s.Kind(),
+		Keep:  AnchorKeepInstruction,
+	}, nil
+}
+
+// CheckAuditAnchor implements Store.
+func (s *PostgresStore) CheckAuditAnchor(ctx context.Context, anchor AuditAnchor) (*AuditAnchorReport, error) {
+	// One snapshot, so the chain id, the anchored row and the count that
+	// follows all describe the same trail.
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("storage: begin anchor check: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	return checkAuditAnchorTx(ctx, tx, s.Kind(), anchor)
+}
+
+// checkAuditAnchorTx runs against any querier, which lets a test rewrite the
+// trail inside a transaction, check the anchor against the rewrite, and roll
+// back — proving detection without committing the damage.
+func checkAuditAnchorTx(ctx context.Context, q querier, storeKind string, anchor AuditAnchor) (*AuditAnchorReport, error) {
+	report := &AuditAnchorReport{
+		Sequence: anchor.Sequence, ExpectedHash: anchor.EntryHash,
+		Store: storeKind, Attests: AnchorAttests,
+	}
+	if anchor.Sequence <= 0 || anchor.EntryHash == "" || anchor.ChainID == "" {
+		report.Verdict = AnchorMalformed
+		report.Detail = "An anchor needs a chain id, a positive sequence and an entry hash."
+		return report, nil
+	}
+
+	if err := q.QueryRow(ctx, `SELECT chain_id FROM audit_chain_head WHERE only_row`).Scan(&report.ChainID); err != nil {
+		return nil, fmt.Errorf("storage: read chain id: %w", err)
+	}
+	if report.ChainID != anchor.ChainID {
+		report.Verdict = AnchorForeignChain
+		report.Detail = fmt.Sprintf("The anchor belongs to chain %q; this database's chain is %q. "+
+			"Usually the wrong deployment; occasionally a restore into the wrong database.",
+			anchor.ChainID, report.ChainID)
+		return report, nil
+	}
+
+	var found *string
+	err := q.QueryRow(ctx,
+		`SELECT entry_hash FROM audit_log WHERE sequence = $1 AND chain_id = $2`,
+		anchor.Sequence, anchor.ChainID).Scan(&found)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows) || (err == nil && found == nil):
+		report.Verdict = AnchorEntryMissing
+		report.Detail = "The anchored entry is not in the trail. It was removed, or the trail was replaced."
+		return report, nil
+	case err != nil:
+		return nil, fmt.Errorf("storage: read anchored entry: %w", err)
+	}
+
+	report.FoundHash = *found
+	if *found != anchor.EntryHash {
+		report.Verdict = AnchorEntryAltered
+		report.Detail = "The anchored entry hashes to something else now. Every entry at or before this " +
+			"sequence is in question, and whoever changed it could also recompute the chain — which is " +
+			"why the internal check may still report the trail consistent."
+		return report, nil
+	}
+
+	if err := q.QueryRow(ctx, `
+		SELECT count(*) FROM audit_log
+		 WHERE entry_hash IS NOT NULL AND chain_id = $1 AND sequence > $2`,
+		anchor.ChainID, anchor.Sequence).Scan(&report.EntriesSince); err != nil {
+		return nil, fmt.Errorf("storage: count entries since anchor: %w", err)
+	}
+	report.Verdict = AnchorIntact
+	report.Detail = fmt.Sprintf("Every entry at or before sequence %d is unchanged since the anchor was issued. "+
+		"%d entries have been written since, which this anchor says nothing about.",
+		anchor.Sequence, report.EntriesSince)
+	return report, nil
+}
+
+// ---------------------------------------------------------------------------
+// Anchors — memory
+// ---------------------------------------------------------------------------
+
+// IssueAuditAnchor implements Store.
+func (s *MemoryStore) IssueAuditAnchor(_ context.Context) (*AuditAnchor, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var head *audit.Entry
+	var entries int64
+	for _, e := range s.auditLog {
+		if e.EntryHash == "" || e.ChainID != s.chainID {
+			continue
+		}
+		entries++
+		head = e
+	}
+	if head == nil {
+		return nil, fmt.Errorf("storage: the audit chain holds no entries yet, so there is nothing to anchor")
+	}
+	return &AuditAnchor{
+		ChainID: s.chainID, Sequence: head.Sequence, EntryHash: head.EntryHash,
+		IssuedAt: time.Now().UTC(), Entries: entries,
+		Store: s.Kind(),
+		// The memory store's anchor is honest about being worth less: the trail
+		// it commits to does not survive a restart, so an anchor outliving the
+		// process has nothing left to compare against.
+		Keep: AnchorKeepInstruction + " On the in-memory store the trail does not survive a restart, " +
+			"so an anchor kept across one has nothing left to check.",
+	}, nil
+}
+
+// CheckAuditAnchor implements Store.
+func (s *MemoryStore) CheckAuditAnchor(_ context.Context, anchor AuditAnchor) (*AuditAnchorReport, error) {
+	report := &AuditAnchorReport{
+		Sequence: anchor.Sequence, ExpectedHash: anchor.EntryHash,
+		Store: s.Kind(), Attests: AnchorAttests,
+	}
+	if anchor.Sequence <= 0 || anchor.EntryHash == "" || anchor.ChainID == "" {
+		report.Verdict = AnchorMalformed
+		report.Detail = "An anchor needs a chain id, a positive sequence and an entry hash."
+		return report, nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	report.ChainID = s.chainID
+	if s.chainID != anchor.ChainID {
+		report.Verdict = AnchorForeignChain
+		report.Detail = fmt.Sprintf("The anchor belongs to chain %q; this store's chain is %q.",
+			anchor.ChainID, s.chainID)
+		return report, nil
+	}
+
+	var anchored *audit.Entry
+	for _, e := range s.auditLog {
+		if e.Sequence == anchor.Sequence && e.ChainID == anchor.ChainID && e.EntryHash != "" {
+			anchored = e
+			break
+		}
+	}
+	if anchored == nil {
+		report.Verdict = AnchorEntryMissing
+		report.Detail = "The anchored entry is not in the trail."
+		return report, nil
+	}
+	report.FoundHash = anchored.EntryHash
+	if anchored.EntryHash != anchor.EntryHash {
+		report.Verdict = AnchorEntryAltered
+		report.Detail = "The anchored entry hashes to something else now."
+		return report, nil
+	}
+	for _, e := range s.auditLog {
+		if e.EntryHash != "" && e.ChainID == anchor.ChainID && e.Sequence > anchor.Sequence {
+			report.EntriesSince++
+		}
+	}
+	report.Verdict = AnchorIntact
+	report.Detail = fmt.Sprintf("Every entry at or before sequence %d is unchanged since the anchor was issued. "+
+		"%d entries have been written since, which this anchor says nothing about.",
+		anchor.Sequence, report.EntriesSince)
 	return report, nil
 }

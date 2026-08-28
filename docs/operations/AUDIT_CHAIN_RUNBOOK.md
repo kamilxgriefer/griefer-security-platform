@@ -86,11 +86,39 @@ What raises the cost is that the attacker must rewrite the whole suffix rather
 than one row. What would close it is anchoring — comparing `linkage.head_hash`
 against a copy held under a different authority.
 
-**Which is worth doing by hand today.** Record `linkage.head_hash` and
-`linkage.head_sequence` somewhere outside this database — a ticket, a chat
-message, a second system's log. A rewrite cannot reach a copy it does not
-control, so one saved head is enough to catch one. This is thin, and it is thin
-because it depends on someone having kept the copy.
+**Which the platform now hands you as an artefact.** Do not copy fields out of a
+verify response by hand — take an anchor:
+
+```bash
+curl -sS "$API/api/v1/audit/anchor" \
+  -H "Authorization: Bearer $INTERNAL_API_TOKEN" \
+  -H "X-Griefer-Actor: $YOU" -H "X-Griefer-Actor-Role: admin" | tee anchor.json
+```
+
+Paste `anchor.json` somewhere GRIEFER's database does not reach — the incident
+ticket, a chat channel, another system's log. One anchor pins every audit entry
+at or before its sequence, so a rewrite of the whole history disagrees with it.
+
+To check one back:
+
+```bash
+curl -sS -X POST "$API/api/v1/audit/anchor" \
+  -H "Authorization: Bearer $INTERNAL_API_TOKEN" \
+  -H "X-Griefer-Actor: $YOU" -H "X-Griefer-Actor-Role: admin" \
+  -H "Content-Type: application/json" --data @anchor.json | jq .
+```
+
+| `verdict` | Reading |
+|---|---|
+| `intact` | Every entry at or before the anchored sequence is unchanged. Says nothing about entries written since — `entries_since` counts them. |
+| `entry_altered` | **The finding nothing inside the database can produce.** The anchored entry is present and hashes to something else, so the prefix was rewritten by something that could also recompute the chain — which is why `verify` may still say `consistent`. |
+| `entry_missing` | The anchored entry is gone. A restore to a point before the anchor does this legitimately; re-anchor afterwards. |
+| `foreign_chain` | The anchor belongs to a different trail. Usually the wrong deployment. |
+| `malformed` | Not an anchor this endpoint can read. |
+
+**Take an anchor as the last step of any incident that touched the trail**, and
+keep it with the incident record. An anchor nobody took is not a control, and an
+anchor kept inside GRIEFER is evidence of nothing.
 
 ## Queries behind each row
 

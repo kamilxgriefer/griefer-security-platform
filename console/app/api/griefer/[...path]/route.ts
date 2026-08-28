@@ -33,8 +33,13 @@ const ALLOWED_EXACT: Record<string, readonly string[]> = {
     // Without this entry resolveTarget returns null and the console 404s
     // before the API is ever asked.
     "audit/verify",
+    "audit/anchor",
   ],
-  POST: ["actions/evaluate"],
+  // The anchor check is a POST because the anchor travels in a body:
+  // forwardableQuery below copies a fixed set of parameter names and silently
+  // drops the rest, so an anchor sent as a query string would vanish here with
+  // no error anywhere.
+  POST: ["actions/evaluate", "audit/anchor"],
 };
 
 /**

@@ -25,3 +25,4 @@ reversal is a new ADR that supersedes the old one.
 | [0005](0005-evidence-categories.md) | Gate automation on independent evidence categories | Accepted |
 | [0006](0006-action-evaluation-audit-atomicity.md) | Evaluate policy outside the transaction, persist the decision inside one | Accepted |
 | [0007](0007-hash-chained-audit-without-anchor.md) | Hash-chain the audit trail without an external anchor | Accepted |
+| [0008](0008-operator-held-audit-anchors.md) | Anchor the audit chain in the operator's hands | Accepted |

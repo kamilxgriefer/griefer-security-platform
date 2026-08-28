@@ -683,6 +683,183 @@ func TestAConsistentlyForgedAppendIsNotDetected(t *testing.T) {
 	}
 }
 
+// TestAnOperatorHeldAnchorCatchesAConsistentRewrite is the reason anchors exist.
+//
+// TestAConsistentlyForgedAppendIsNotDetected and the safety model both state the
+// limit: the canonical form is public and no secret enters it, so a role that
+// can write to audit_log can rewrite an entry, recompute every hash after it,
+// and verify -- reading only that database -- reports the trail consistent.
+//
+// An anchor is one link copied out of the database before the rewrite. It is
+// the only check in the platform whose reference value did not come from the
+// thing being checked, which is exactly why it survives an attacker who owns
+// the thing being checked.
+func TestAnOperatorHeldAnchorCatchesAConsistentRewrite(t *testing.T) {
+	store, ctx := chainTestStore(t)
+	seeded := seedChain(t, store, ctx, 4)
+
+	// The operator takes an anchor and keeps it somewhere else. In this test
+	// "somewhere else" is a local variable; in production it is a ticket.
+	anchor, err := store.IssueAuditAnchor(ctx)
+	if err != nil {
+		t.Fatalf("IssueAuditAnchor() error = %v", err)
+	}
+	if anchor.Sequence != seeded[len(seeded)-1].Sequence || anchor.EntryHash == "" {
+		t.Fatalf("anchor does not name the trail head: %+v", anchor)
+	}
+
+	if report, err := store.CheckAuditAnchor(ctx, *anchor); err != nil {
+		t.Fatalf("CheckAuditAnchor() error = %v", err)
+	} else if report.Verdict != AnchorIntact {
+		t.Fatalf("a freshly issued anchor reports %q: %s", report.Verdict, report.Detail)
+	}
+
+	// Now the attacker rewrites the trail CONSISTENTLY: entry 2's outcome is
+	// changed and every hash from 2 onward is recomputed, exactly as someone
+	// holding this repository and write access to the table would.
+	rewritten := wreck(t, store, ctx, func(tx pgx.Tx) {
+		rows, err := tx.Query(ctx, `
+			SELECT sequence, id, occurred_at, actor, COALESCE(actor_role,''), action, subject_type,
+			       subject_id, outcome, reason, COALESCE(request_id,''), details, chain_id
+			FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY sequence`)
+		if err != nil {
+			t.Fatalf("read trail: %v", err)
+		}
+		type row struct {
+			entry   audit.Entry
+			details []byte
+		}
+		var all []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.entry.Sequence, &r.entry.ID, &r.entry.Timestamp, &r.entry.Actor,
+				&r.entry.ActorRole, &r.entry.Action, &r.entry.SubjectType, &r.entry.SubjectID,
+				&r.entry.Outcome, &r.entry.Reason, &r.entry.RequestID, &r.details, &r.entry.ChainID); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			all = append(all, r)
+		}
+		rows.Close()
+
+		// The edit: a success becomes a denial, which is the shape of hiding
+		// that something was allowed.
+		all[1].entry.Outcome = audit.OutcomeDenied
+
+		prev := audit.GenesisPrevHash
+		for _, r := range all {
+			canonical, err := audit.CanonicalDetailsFromRaw(r.details)
+			if err != nil {
+				t.Fatalf("canonicalise: %v", err)
+			}
+			hash := audit.ChainHash(r.entry.ChainID, prev, &r.entry, canonical)
+			if _, err := tx.Exec(ctx, `
+				UPDATE audit_log SET outcome = $1, prev_hash = $2, entry_hash = $3 WHERE sequence = $4`,
+				r.entry.Outcome, prev, hash, r.entry.Sequence); err != nil {
+				t.Fatalf("rewrite: %v", err)
+			}
+			prev = hash
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE audit_chain_head SET head_hash = $1, head_sequence = $2`,
+			prev, all[len(all)-1].entry.Sequence); err != nil {
+			t.Fatalf("rewrite head: %v", err)
+		}
+	})
+
+	// The internal check is satisfied. It has to be: every link was recomputed,
+	// and it has nothing to compare against except the chain itself.
+	if rewritten.Status != ChainConsistent {
+		t.Errorf("Status = %q after a consistent rewrite, want %q. If this now detects it, "+
+			"the documents saying the chain cannot are stale. Break: %+v / %+v",
+			rewritten.Status, ChainConsistent, rewritten.Linkage.Break, rewritten.Content.Break)
+	}
+}
+
+// TestAnAnchorSurvivesTheRewriteThatDefeatsTheChain performs the same rewrite
+// and then checks the operator's anchor against it, inside the same
+// transaction, so the detection is proven rather than asserted.
+func TestAnAnchorSurvivesTheRewriteThatDefeatsTheChain(t *testing.T) {
+	store, ctx := chainTestStore(t)
+	seedChain(t, store, ctx, 3)
+
+	anchor, err := store.IssueAuditAnchor(ctx)
+	if err != nil {
+		t.Fatalf("IssueAuditAnchor() error = %v", err)
+	}
+
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, `ALTER TABLE audit_log DISABLE TRIGGER audit_log_append_only`); err != nil {
+		t.Skipf("cannot disable the append-only trigger as this role: %v", err)
+	}
+	// The minimum that defeats an anchor is changing the anchored entry's hash,
+	// which any rewrite of the prefix does.
+	if _, err := tx.Exec(ctx,
+		`UPDATE audit_log SET entry_hash = $1 WHERE sequence = $2`,
+		"00000000000000000000000000000000000000000000000000000000deadbeef", anchor.Sequence); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+
+	report, err := checkAuditAnchorTx(ctx, tx, store.Kind(), *anchor)
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if report.Verdict != AnchorEntryAltered {
+		t.Fatalf("verdict = %q, want %q — an anchor kept outside the database is the only thing "+
+			"that catches this", report.Verdict, AnchorEntryAltered)
+	}
+	if report.FoundHash == report.ExpectedHash {
+		t.Error("the report does not show the difference it found")
+	}
+}
+
+// TestAnAnchorFromAnotherTrailIsNotSilentlyAccepted.
+func TestAnAnchorFromAnotherTrailIsNotSilentlyAccepted(t *testing.T) {
+	store, ctx := chainTestStore(t)
+	seedChain(t, store, ctx, 2)
+	anchor, err := store.IssueAuditAnchor(ctx)
+	if err != nil {
+		t.Fatalf("IssueAuditAnchor() error = %v", err)
+	}
+
+	foreign := *anchor
+	foreign.ChainID = "chn-some-other-database"
+	report, err := store.CheckAuditAnchor(ctx, foreign)
+	if err != nil {
+		t.Fatalf("CheckAuditAnchor() error = %v", err)
+	}
+	if report.Verdict != AnchorForeignChain {
+		t.Errorf("verdict = %q, want %q", report.Verdict, AnchorForeignChain)
+	}
+
+	missing := *anchor
+	missing.Sequence = anchor.Sequence + 10_000
+	report, err = store.CheckAuditAnchor(ctx, missing)
+	if err != nil {
+		t.Fatalf("CheckAuditAnchor() error = %v", err)
+	}
+	if report.Verdict != AnchorEntryMissing {
+		t.Errorf("verdict = %q, want %q", report.Verdict, AnchorEntryMissing)
+	}
+
+	for _, bad := range []AuditAnchor{
+		{ChainID: anchor.ChainID, Sequence: 0, EntryHash: anchor.EntryHash},
+		{ChainID: anchor.ChainID, Sequence: anchor.Sequence, EntryHash: ""},
+		{ChainID: "", Sequence: anchor.Sequence, EntryHash: anchor.EntryHash},
+	} {
+		report, err := store.CheckAuditAnchor(ctx, bad)
+		if err != nil {
+			t.Fatalf("CheckAuditAnchor(%+v) error = %v", bad, err)
+		}
+		if report.Verdict != AnchorMalformed {
+			t.Errorf("verdict = %q for %+v, want %q", report.Verdict, bad, AnchorMalformed)
+		}
+	}
+}
+
 func hasWarning(r *AuditChainReport, want string) bool {
 	for _, w := range r.Warnings {
 		if w == want {

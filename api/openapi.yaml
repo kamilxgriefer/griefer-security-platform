@@ -440,6 +440,73 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/v1/audit/anchor:
+    get:
+      tags: [Audit]
+      summary: Issue an anchor to keep outside this database
+      description: |
+        Returns a commitment to the audit trail's current head, for the operator
+        to store somewhere GRIEFER's database does not reach.
+
+        **This is the half of tamper-evidence the chain cannot supply itself.**
+        The canonical form is public and no secret enters it, so a role that can
+        write to `audit_log` can alter an entry, recompute every hash after it,
+        and `GET /api/v1/audit/verify` — which has nothing to compare against
+        but the chain — reports the trail intact. An anchor is one link copied
+        out before that happens.
+
+        One anchor pins **every entry at or before its sequence**: `entry_hash`
+        covers `prev_hash`, which covers its predecessor's, back to the genesis.
+        Altering anything in that prefix changes the anchored hash.
+
+        Kept inside this database, an anchor proves nothing. The response says
+        so in its `keep` field, because that is where someone copying a JSON
+        blob is looking.
+
+        Administrator-only. Writes nothing, including no audit entry — issuing
+        one would move the head it had just committed to.
+      responses:
+        "200":
+          description: The anchor. Store it elsewhere.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditAnchor" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: The chain holds no entries yet, so there is nothing to commit to.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    post:
+      tags: [Audit]
+      summary: Check an anchor against the trail
+      description: |
+        Compares a previously issued anchor against the trail as it stands now.
+
+        This is the only check in the platform whose reference value did not
+        come out of the database being checked, which is why it survives an
+        attacker who controls that database — provided the anchor was kept
+        elsewhere.
+
+        Answers `200` in every case, a detected rewrite included, for the same
+        reason `verify` does: bad news that looks like an outage is bad news
+        nobody acts on. Read `verdict`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AuditAnchor" }
+      responses:
+        "200":
+          description: The comparison. Read `verdict`, not the status code.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditAnchorReport" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
 components:
   parameters:
     Limit:
@@ -1111,6 +1178,51 @@ components:
         attests:
           type: string
           description: A fixed sentence stating what a green result is and is not evidence of.
+
+    AuditAnchor:
+      type: object
+      required: [chain_id, sequence, entry_hash]
+      properties:
+        chain_id: { type: string }
+        sequence: { type: integer, description: The anchored entry's sequence. }
+        entry_hash:
+          type: string
+          description: The anchored entry's hash, which pins every entry at or before it.
+        issued_at: { type: string, format: date-time }
+        entries: { type: integer, description: Chained entries in the trail when this was issued. }
+        store: { type: string }
+        keep:
+          type: string
+          description: |
+            Where to keep it, on the artefact rather than in a document. An
+            anchor left in the system it describes is evidence of nothing.
+
+    AuditAnchorReport:
+      type: object
+      required: [verdict, store, chain_id, sequence, expected_hash, entries_since, detail, attests]
+      properties:
+        verdict:
+          type: string
+          enum: [intact, entry_altered, entry_missing, foreign_chain, malformed]
+          description: |
+            `entry_altered` is the finding the internal chain cannot produce:
+            the anchored entry is present and hashes to something else, so the
+            prefix was rewritten by something that could also recompute the
+            chain. `foreign_chain` is usually the wrong deployment.
+        store: { type: string }
+        chain_id:
+          type: string
+          description: The chain that answered, which may not be the anchored one.
+        sequence: { type: integer }
+        expected_hash: { type: string }
+        found_hash: { type: string }
+        entries_since:
+          type: integer
+          description: Chained entries written after the anchored one. An anchor says nothing about those.
+        detail: { type: string }
+        attests:
+          type: string
+          description: A fixed sentence stating what a verdict of intact is and is not evidence of.
 
     ComponentStatus:
       type: object

@@ -109,6 +109,19 @@ func NewRouter(svc *Service, opts RouterOptions) http.Handler {
 	mux.Handle("GET /api/v1/audit/verify",
 		svc.metrics.instrument("/api/v1/audit/verify",
 			httpx.RequireRole(RoleAdmin)(http.HandlerFunc(svc.handleVerifyAudit))))
+	// An anchor is issued for the operator to keep OUTSIDE this database, and
+	// checked back against it later. Administrator-only on both verbs, like the
+	// trail itself.
+	//
+	// The check is a POST because the anchor travels in a body: the console
+	// gateway forwards a fixed set of query parameters and drops the rest, so an
+	// anchor sent as a query string would vanish between the two halves with no
+	// error anywhere.
+	mux.Handle("GET /api/v1/audit/anchor",
+		svc.metrics.instrument("/api/v1/audit/anchor",
+			httpx.RequireRole(RoleAdmin)(http.HandlerFunc(svc.handleIssueAuditAnchor))))
+	mux.Handle("POST /api/v1/audit/anchor",
+		httpx.RequireRole(RoleAdmin)(write("/api/v1/audit/anchor", svc.handleCheckAuditAnchor)))
 	mux.Handle("GET /api/v1/system/status", read("/api/v1/system/status", svc.handleSystemStatus))
 
 	// Anything unmatched gets a JSON 404 rather than net/http's text default,

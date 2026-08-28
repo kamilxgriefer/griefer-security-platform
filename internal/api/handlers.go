@@ -455,6 +455,56 @@ func (s *Service) handleVerifyAudit(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, r, http.StatusOK, report)
 }
 
+// handleIssueAuditAnchor returns a commitment to the trail's current head.
+//
+// This is the half of tamper-evidence the chain cannot supply itself. The
+// canonical form is public and no secret enters it, so a role that can write to
+// audit_log can alter an entry and recompute every hash after it — and
+// /audit/verify, reading only that database, reports the result intact. An
+// anchor is one link copied somewhere that role does not reach.
+//
+// It writes nothing, including no audit entry: issuing one would move the head
+// it had just committed to.
+func (s *Service) handleIssueAuditAnchor(w http.ResponseWriter, r *http.Request) {
+	anchor, err := s.store.IssueAuditAnchor(r.Context())
+	if err != nil {
+		// An empty chain is a 409 rather than a 500: nothing is broken, there is
+		// simply nothing to commit to yet, and a caller can act on that.
+		if strings.Contains(err.Error(), "no entries yet") {
+			httpx.WriteError(w, r, http.StatusConflict, httpx.CodeNotFound,
+				"The audit chain holds no entries yet, so there is nothing to anchor.", nil)
+			return
+		}
+		s.writeInternal(w, r, "issue audit anchor", err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, anchor)
+}
+
+// handleCheckAuditAnchor compares an anchor the operator kept against the trail.
+//
+// 200 in every case, including a detected rewrite, for the reason
+// /audit/verify answers 200 on a broken chain: bad news that looks like an
+// outage is bad news nobody acts on. Read `verdict`.
+func (s *Service) handleCheckAuditAnchor(w http.ResponseWriter, r *http.Request) {
+	raw, ok := readBody(w, r)
+	if !ok {
+		return
+	}
+	var anchor storage.AuditAnchor
+	if err := json.Unmarshal(raw, &anchor); err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, httpx.CodeMalformedRequest,
+			"Anchor could not be parsed. Send the object returned by GET /api/v1/audit/anchor.", nil)
+		return
+	}
+	report, err := s.store.CheckAuditAnchor(r.Context(), anchor)
+	if err != nil {
+		s.writeInternal(w, r, "check audit anchor", err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, report)
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

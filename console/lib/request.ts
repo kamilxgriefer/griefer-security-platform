@@ -6,9 +6,12 @@ import "server-only";
  * X-Forwarded-For is read here — unlike in the Go API — because the console
  * always runs behind the platform's proxy, where the socket address is the
  * proxy and the header is the only signal available. The leftmost entry is a
- * client-supplied value and can be spoofed, so this bounds abuse rather than
- * preventing it. Production authentication needs a trusted-proxy allowlist;
- * see docs/DEMO_SECURITY.md.
+ * client-supplied value and can be spoofed, so a caller rotating the header
+ * gets a fresh budget on every request and this bounds honest abuse only. The
+ * axis that actually holds against password guessing is the per-account one in
+ * lib/ratelimit.ts, because the username being attempted is not the attacker's
+ * to rotate. Production authentication still needs a trusted-proxy allowlist;
+ * see docs/security/CONSOLE_GATE.md.
  */
 export function clientKey(request: Request): string {
   const forwarded = request.headers.get("x-forwarded-for");

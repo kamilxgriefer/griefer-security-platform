@@ -2,7 +2,13 @@ import { cookies } from "next/headers";
 
 import { authenticate } from "@/lib/accounts";
 import { authConfigured, consoleConfig } from "@/lib/config";
-import { blockedFor, recordFailure, recordSuccess } from "@/lib/ratelimit";
+import {
+  accountKey,
+  blockedFor,
+  recordAccountFailure,
+  recordFailure,
+  recordSuccess,
+} from "@/lib/ratelimit";
 import { clientKey, isSameOrigin } from "@/lib/request";
 import { SESSION_COOKIE, cookieOptions, sign } from "@/lib/session";
 
@@ -62,16 +68,42 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: REJECTED }, { status: 401 });
   }
 
+  // The second budget, and the one that cannot be rotated away.
+  //
+  // `key` comes from X-Forwarded-For, which the caller supplies: an attacker
+  // changing that header on every request gets a fresh caller budget every
+  // time, so the limit above bounds honest abuse and nothing else. Whoever is
+  // guessing the administrator's password has to keep guessing against the
+  // administrator, so the username is the axis that holds.
+  //
+  // Checked after the body is read, because the username is in the body, and
+  // deliberately BEFORE authenticate() — that is where the scrypt work is, and
+  // an attacker who can reach it freely has a CPU cost as well as an unlimited
+  // guess count.
+  const account = accountKey(username);
+  const accountBlocked = blockedFor(account);
+  if (accountBlocked > 0) {
+    return Response.json(
+      { error: "Too many attempts. Try again later." },
+      { status: 429, headers: { "Retry-After": String(accountBlocked) } },
+    );
+  }
+
   // authenticate performs the same scrypt work whether or not the username
   // exists, so the response time does not reveal which accounts are real.
   const identity = await authenticate(username, password, config);
 
   if (!identity) {
     recordFailure(key);
+    // Counted whether or not the account exists, for the same reason the scrypt
+    // work is done either way: a budget that only moved for real usernames
+    // would say which ones those are.
+    recordAccountFailure(account);
     return Response.json({ error: REJECTED }, { status: 401 });
   }
 
   recordSuccess(key);
+  recordSuccess(account);
   const token = await sign(identity.username, identity.role, config.sessionSecret);
   (await cookies()).set(SESSION_COOKIE, token, cookieOptions(config.secureCookies));
 

@@ -1,6 +1,7 @@
 package graph_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -384,5 +385,92 @@ func TestGraphIsSafeForConcurrentUse(t *testing.T) {
 	}
 	for i := 0; i < 8; i++ {
 		<-done
+	}
+}
+
+// TestTheGraphIsBoundedAndKeepsTheInventory.
+//
+// g.entities, g.out and g.in had no cap and no eviction: a batch of events
+// naming distinct keys grew all three for the lifetime of the process.
+//
+// The bound must not become a way to blind the platform, so the entities an
+// operator declared are never the ones evicted — otherwise a producer could
+// push the asset inventory out of the graph and flatten every blast-radius
+// calculation that depends on it.
+func TestTheGraphIsBoundedAndKeepsTheInventory(t *testing.T) {
+	g := graph.New()
+	base := time.Date(2026, 8, 27, 9, 0, 0, 0, time.UTC)
+
+	// The operator's inventory: declared, not observed.
+	declared := []string{"crown-jewels", "payroll", "prod-db"}
+	for i, key := range declared {
+		g.UpsertEntity(graph.Entity{
+			Type: graph.TypeCloudResource, Key: key,
+			Criticality: graph.CriticalityCritical,
+			FirstSeen:   base, LastSeen: base.Add(time.Duration(i) * time.Second),
+		})
+	}
+
+	// A hostile batch: every event names a key nobody has seen before.
+	const flood = graph.MaxObservedEntities + 2_000
+	for i := 0; i < flood; i++ {
+		g.UpsertEntity(graph.Entity{
+			Type: graph.TypeIdentity, Key: fmt.Sprintf("flood-%06d", i),
+			Observed: true, FirstSeen: base, LastSeen: base.Add(time.Duration(i) * time.Millisecond),
+		})
+	}
+
+	entities, _ := g.Size()
+	if entities > graph.MaxObservedEntities {
+		t.Fatalf("graph holds %d entities after a flood of %d, above the cap of %d",
+			entities, flood, graph.MaxObservedEntities)
+	}
+
+	// Everything the operator declared is still there.
+	for _, key := range declared {
+		if _, ok := g.Entity(graph.EntityID(graph.TypeCloudResource, key)); !ok {
+			t.Errorf("declared entity %q was evicted; a producer must not be able to push the "+
+				"asset inventory out of the graph", key)
+		}
+	}
+
+	// And the most recent observations survived: eviction is least-recently-seen.
+	newest := graph.EntityID(graph.TypeIdentity, fmt.Sprintf("flood-%06d", flood-1))
+	if _, ok := g.Entity(newest); !ok {
+		t.Error("the most recently seen observed entity was evicted; eviction is not least-recently-seen")
+	}
+}
+
+// TestEvictingAnEntityLeavesNoHalfEdges. An edge index still naming a removed
+// entity is both a leak and a neighbour lookup that returns something gone.
+func TestEvictingAnEntityLeavesNoHalfEdges(t *testing.T) {
+	g := graph.New()
+	base := time.Date(2026, 8, 27, 9, 0, 0, 0, time.UTC)
+
+	survivor := graph.EntityID(graph.TypeCloudResource, "survivor")
+	g.UpsertEntity(graph.Entity{
+		Type: graph.TypeCloudResource, Key: "survivor",
+		Criticality: graph.CriticalityCritical, FirstSeen: base, LastSeen: base,
+	})
+
+	const flood = graph.MaxObservedEntities + 500
+	for i := 0; i < flood; i++ {
+		id := graph.EntityID(graph.TypeIdentity, fmt.Sprintf("e-%06d", i))
+		g.UpsertEntity(graph.Entity{
+			Type: graph.TypeIdentity, Key: fmt.Sprintf("e-%06d", i),
+			Observed: true, FirstSeen: base, LastSeen: base.Add(time.Duration(i) * time.Millisecond),
+		})
+		g.UpsertEntity(graph.Entity{Type: graph.TypeCloudResource, Key: "survivor", Criticality: graph.CriticalityCritical})
+		g.UpsertEdge(id, survivor, graph.RelAccessed, base, "")
+	}
+
+	for _, edge := range g.Neighbours(survivor) {
+		peer := edge.From
+		if peer == survivor {
+			peer = edge.To
+		}
+		if _, ok := g.Entity(peer); !ok {
+			t.Fatalf("an edge still names %q, which is no longer in the graph", peer)
+		}
 	}
 }

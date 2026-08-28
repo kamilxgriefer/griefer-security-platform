@@ -33,6 +33,81 @@ func New() *Graph {
 	}
 }
 
+// MaxObservedEntities bounds the half of the graph a producer fills.
+//
+// Edges already carry maxEdgeEvidence and findings carry maxFindingEvents, but
+// the entity map itself had no cap and no eviction anywhere in this package: a
+// batch of events naming distinct keys grew g.entities, g.out and g.in for the
+// lifetime of the process. CONTRIBUTING.md is explicit that a map an outside
+// party fills needs a limit, and "the graph is rebuilt on restart" is not one —
+// it is a description of how the memory is eventually reclaimed, by losing the
+// process.
+const MaxObservedEntities = 20_000
+
+// evictObservedLocked drops the least recently seen OBSERVED entities, and
+// their edges, until the graph is back under the cap.
+//
+// Declared inventory entities are never evicted. They are what an operator
+// curated, and a producer must not be able to push them out — that would turn a
+// memory bound into a way to blind the blast-radius calculation, which is worse
+// than the growth it fixes.
+//
+// What eviction costs is reach into the oldest observed corners of the graph.
+// What it buys is that the graph still exists after a hostile batch. The graph
+// is already documented as in-memory and rebuilt on start (M2 persists it), so
+// this moves the horizon from "everything since this process started" to "the
+// most recent MaxObservedEntities", rather than introducing forgetting to
+// something that promised to remember.
+func (g *Graph) evictObservedLocked() {
+	if len(g.entities) <= MaxObservedEntities {
+		return
+	}
+	observed := make([]*Entity, 0, len(g.entities))
+	for _, e := range g.entities {
+		if e.Observed {
+			observed = append(observed, e)
+		}
+	}
+	sort.Slice(observed, func(i, j int) bool { return observed[i].LastSeen.Before(observed[j].LastSeen) })
+
+	// Evicted in a batch down to a headroom below the cap, not one at a time.
+	// At exactly the cap, evicting a single entity per insert would sort the
+	// whole graph on every insert — which hands the same attacker a CPU cost
+	// in place of the memory one.
+	target := MaxObservedEntities - MaxObservedEntities/20
+	over := len(g.entities) - target
+	for _, e := range observed {
+		if over <= 0 {
+			return
+		}
+		g.removeEntityLocked(e.ID)
+		over--
+	}
+	// Falling out of the loop means declared entities alone exceed the cap.
+	// Nothing to do about that here: the inventory is the operator's, and
+	// silently dropping it would be the failure this function exists to avoid.
+}
+
+// removeEntityLocked deletes an entity and every edge touching it, from both
+// indexes, so no half-edge is left pointing at something that is gone.
+func (g *Graph) removeEntityLocked(id string) {
+	for key := range g.out[id] {
+		delete(g.in[key.peer], edgeKey{peer: id, relation: key.relation})
+		if len(g.in[key.peer]) == 0 {
+			delete(g.in, key.peer)
+		}
+	}
+	for key := range g.in[id] {
+		delete(g.out[key.peer], edgeKey{peer: id, relation: key.relation})
+		if len(g.out[key.peer]) == 0 {
+			delete(g.out, key.peer)
+		}
+	}
+	delete(g.out, id)
+	delete(g.in, id)
+	delete(g.entities, id)
+}
+
 // UpsertEntity merges e into the graph. Existing fields are only overwritten
 // when the incoming value carries more information: a name or criticality
 // already known is never downgraded by a later, sparser observation.
@@ -56,6 +131,8 @@ func (g *Graph) upsertEntityLocked(e Entity) *Entity {
 			clone.Attributes = copyMap(e.Attributes)
 		}
 		g.entities[e.ID] = &clone
+		// Swept here because this is the only place the map grows.
+		g.evictObservedLocked()
 		return &clone
 	}
 	if e.Name != "" {

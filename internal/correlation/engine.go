@@ -24,6 +24,15 @@ const DefaultWindow = 6 * time.Hour
 const (
 	maxFindingEvents    = 100
 	maxIncidentEvidence = 200
+	// maxFindingEntities bounds the entity ids retained per finding.
+	//
+	// EventIDs was capped and EntityIDs, three lines below it in mergeFinding,
+	// was not — so one finding absorbed an entity id per event forever, and
+	// recompute() rebuilds the incident's entity set from all of them on every
+	// event. That is quadratic in a value a producer chooses, which is the
+	// shape CONTRIBUTING.md is describing when it says an unbounded list an
+	// outside party can influence is a limit that does not exist.
+	maxFindingEntities = 100
 )
 
 // IncidentStore is the persistence surface the engine needs. Declaring it here
@@ -58,6 +67,64 @@ type Engine struct {
 type subjectState struct {
 	incidentID string
 	lastSeen   time.Time
+}
+
+// maxTrackedSubjects bounds the correlation state.
+//
+// openSubjects and thresholdHits are keyed by a subject the producer chooses,
+// and nothing was ever removed from either: one batch naming distinct subjects
+// grew both maps for the lifetime of the process. CONTRIBUTING.md names this
+// exact shape — "every field, list, map and query that an outside party can
+// influence needs a limit" — and this is a map an outside party fills.
+const maxTrackedSubjects = 10_000
+
+// evictStaleLocked drops correlation state that can no longer change a
+// decision, and, only if that is not enough, the oldest state that still can.
+//
+// The first pass is free of behaviour change by construction: a subject whose
+// lastSeen is outside the window is already treated as expired by
+// mergeIntoIncident, and a threshold slot whose hits have all aged out can
+// never fire. Both are dead weight rather than evidence, and removing them is
+// what the window already means.
+//
+// The second pass is not free, and is the honest trade. Dropping a live subject
+// means the next event for it opens a new incident instead of joining the one
+// it belongs to — evidence gets split, which is a real loss. It is the lesser
+// loss: an unbounded map ends with the process killed and every open incident
+// lost with it, and an attacker choosing subjects is the one who decides when.
+func (e *Engine) evictStaleLocked(now time.Time) {
+	cutoff := now.Add(-e.window)
+	for subject, st := range e.openSubjects {
+		if st.lastSeen.Before(cutoff) {
+			delete(e.openSubjects, subject)
+		}
+	}
+	for key, hits := range e.thresholdHits {
+		if len(hits) == 0 {
+			delete(e.thresholdHits, key)
+		}
+	}
+	if len(e.openSubjects) <= maxTrackedSubjects {
+		return
+	}
+	// Over the cap with nothing stale left. Drop the least recently seen first:
+	// they are the ones closest to expiring anyway.
+	type aged struct {
+		subject string
+		at      time.Time
+	}
+	live := make([]aged, 0, len(e.openSubjects))
+	for subject, st := range e.openSubjects {
+		live = append(live, aged{subject, st.lastSeen})
+	}
+	sort.Slice(live, func(i, j int) bool { return live[i].at.Before(live[j].at) })
+	// Down to a headroom below the cap, not to the cap. At exactly the cap,
+	// evicting one subject per event would sort the whole map on every event —
+	// handing the same attacker a CPU cost in place of the memory one.
+	target := maxTrackedSubjects - maxTrackedSubjects/20
+	for _, a := range live[:len(e.openSubjects)-target] {
+		delete(e.openSubjects, a.subject)
+	}
 }
 
 // Options configures an Engine.
@@ -156,6 +223,8 @@ func (e *Engine) thresholdMet(subject string, rule *Rule, at time.Time) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	e.evictStaleLocked(at)
+
 	cutoff := at.Add(-rule.Threshold.Window)
 	hits := append(e.thresholdHits[key], at)
 	kept := hits[:0]
@@ -229,6 +298,10 @@ func (e *Engine) mergeIntoIncident(ctx context.Context, ev *events.SecurityEvent
 
 	e.mu.Lock()
 	e.openSubjects[subject] = subjectState{incidentID: inc.ID, lastSeen: ev.Timestamp}
+	// Swept on write rather than on a timer: the map only grows here, so this is
+	// the one place that can let it grow, and a background sweeper would be a
+	// goroutine whose absence nobody would notice.
+	e.evictStaleLocked(ev.Timestamp)
 	e.mu.Unlock()
 
 	return inc, nil
@@ -258,6 +331,9 @@ func mergeFinding(inc *incidents.Incident, f incidents.Finding) {
 			}
 		}
 		for _, id := range f.EntityIDs {
+			if len(existing.EntityIDs) >= maxFindingEntities {
+				break
+			}
 			if !containsStr(existing.EntityIDs, id) {
 				existing.EntityIDs = append(existing.EntityIDs, id)
 			}

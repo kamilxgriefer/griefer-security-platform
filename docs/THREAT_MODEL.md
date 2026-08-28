@@ -313,16 +313,24 @@ one component where being wrong is unacceptable.
 | Request flood | Token bucket per client address; `X-Forwarded-For` is deliberately ignored so rotating a header cannot reset a bucket |
 | Rate-limiter memory | Tracked clients capped at 10 000 with TTL eviction |
 | Unbounded queries | `limit` clamped to 200 |
-| Graph growth | 50 event ids per edge; 3-hop traversal limit |
-| Incident growth | 100 event ids per finding; 200 evidence entries per incident |
+| Graph growth | 20 000 entities, evicting least-recently-seen **observed** ones with their edges; declared inventory is never evicted, so a producer cannot push the asset map out. Plus 50 event ids per edge and a 3-hop traversal limit |
+| Correlation state growth | 10 000 tracked subjects, swept on write: expired subjects and empty threshold slots first, then least-recently-seen |
+| Incident growth | 100 event ids and 100 entity ids per finding; 200 evidence entries per incident |
 | Validation error amplification | Field errors capped at 20 |
 | Slow clients | Read, write and idle timeouts on every connection |
-| In-memory store growth | Bounded retention with FIFO eviction |
+| In-memory store growth | Events only: FIFO eviction at `maxEvents`. Incidents, response actions and the audit log are **not** bounded there — see *Not mitigated* below |
 | Policy evaluation | Bounded by `GRIEFER_OPA_TIMEOUT`; a slow kernel fails closed |
 
 *Not mitigated*
 
 - **No global concurrency limit** beyond per-client rate limiting.
+- **The in-memory store bounds only events.** Incidents, response actions and the
+  audit log grow there without limit, and that store is the default
+  (`GRIEFER_STORAGE_POSTGRES` defaults to false). It is documented as not a
+  deployment option, which is a reason not to run it and not a bound.
+- **Read endpoints are not rate limited**, deliberately: an analyst refreshing a
+  console should never be throttled out of an investigation. The cost is that a
+  caller holding the service credential can drive them freely.
 - **PostgreSQL is a single point of failure.** → M8.
 
 *Residual.* An attacker with many source addresses can still generate load.

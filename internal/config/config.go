@@ -263,6 +263,19 @@ func (c Config) Validate() ([]Warning, error) {
 	if c.Postgres.Enabled && strings.TrimSpace(c.Postgres.DSN) == "" {
 		return nil, fmt.Errorf("config: GRIEFER_STORAGE_POSTGRES=true requires GRIEFER_POSTGRES_DSN")
 	}
+	// A DSN with the store switched off is a configuration that means two
+	// things. The operator provided a database; the platform would quietly
+	// ignore it and run every event, incident and audit entry in process
+	// memory, losing all of it on the next restart — and the audit chain there
+	// has no trigger and nothing durable behind it. Platforms inject
+	// DATABASE_URL routinely, which is exactly how this happens by accident.
+	if !c.Postgres.Enabled && strings.TrimSpace(c.Postgres.DSN) != "" {
+		return nil, fmt.Errorf(
+			"config: a database is configured (GRIEFER_POSTGRES_DSN or DATABASE_URL) but " +
+				"GRIEFER_STORAGE_POSTGRES is false, so the platform would run entirely in memory and " +
+				"discard it on restart. Set GRIEFER_STORAGE_POSTGRES=true, or unset the DSN to say " +
+				"the in-memory store is intended")
+	}
 	if !c.Postgres.Enabled {
 		warnings = append(warnings, Warning{
 			Setting: "GRIEFER_STORAGE_POSTGRES",
@@ -335,6 +348,11 @@ func listenAddr() string {
 
 // isPublicBind reports whether host would accept connections from outside the
 // local machine.
+// IsPublicBind reports whether a bind host is reachable from outside this
+// machine. Exported so the router can refuse to serve role-gated endpoints in
+// the one configuration where the role gate cannot work.
+func IsPublicBind(host string) bool { return isPublicBind(host) }
+
 func isPublicBind(host string) bool {
 	switch host {
 	case "", "0.0.0.0", "::", "[::]":

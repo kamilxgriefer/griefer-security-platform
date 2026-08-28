@@ -263,8 +263,13 @@ tool.
 
 - **No real response.** No actuator exists. `mode: execute` is accepted so the
   policy contract can be exercised, and always resolves to "requires approval".
-- **No authentication or authorization.** The API binds loopback and refuses a
-  public interface unless explicitly overridden. Do not expose it. → M8
+- **One shared credential, not per-caller authentication.** `INTERNAL_API_TOKEN`
+  is required on every endpoint except the liveness and readiness probes, and an
+  operator identity asserted in a header is what the role gate reads — so the
+  API is not open, and it also cannot distinguish two callers holding the same
+  token or revoke one of them. Configure the token: without it the API binds
+  loopback, and on a routable address it withdraws its administrator-only
+  endpoints rather than serve them to everyone. Per-caller credentials are → M8
 - **Hash-chained audit, not externally anchored.** Every entry links to its
   predecessor and `GET /api/v1/audit/verify` reports the first broken link; but
   the chain lives in the same database as the entries, so a role that can rewrite

@@ -20,10 +20,25 @@ info:
 
     ## Authentication
 
-    v0.1 has **no authentication**. The API defaults to binding `127.0.0.1` and
-    refuses a non-loopback bind unless `GRIEFER_ALLOW_PUBLIC_BIND=true` is set
-    explicitly. Authentication and RBAC are milestone M8; see `docs/ROADMAP.md`.
-    Do not expose this API to a network.
+    When `INTERNAL_API_TOKEN` is configured, every endpoint except the liveness
+    and readiness probes requires `Authorization: Bearer <token>`, and refusals
+    are `401 unauthorized`. An operator identity travels in `X-Griefer-Actor`
+    and `X-Griefer-Actor-Role`, read only after the credential has been
+    accepted, and the administrator-only endpoints refuse other roles with
+    `403 forbidden`.
+
+    What that is NOT is per-caller authentication. One shared token cannot tell
+    two callers apart or be revoked for one of them, and the role gate binds the
+    console rather than the credential: a caller presenting the token and
+    asserting no operator is admitted, because that is the platform's own
+    internals. Per-caller credentials are milestone M8.
+
+    With no token configured the API binds `127.0.0.1` and refuses a routable
+    bind unless `GRIEFER_ALLOW_PUBLIC_BIND=true` says so explicitly — and in
+    that combination it withdraws its administrator-only endpoints with
+    `503`, because nothing could establish a role to gate them on.
+
+    Do not expose this API directly to a network.
 
     ## Errors
 

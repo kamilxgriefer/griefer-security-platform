@@ -76,7 +76,7 @@ vulnerabilities:
 
 | Limitation | Milestone |
 |---|---|
-| No authentication or authorization | M8 |
+| One shared service credential; no per-caller authentication or revocation | M8 |
 | No producer authentication — anyone with network reach can submit events | M4 |
 | Audit chain is not externally anchored — a database role can rewrite it consistently | M4 |
 | No release signing or build provenance | M8 |

@@ -2,7 +2,11 @@ package api_test
 
 import (
 	"encoding/json"
+	"github.com/kamilxgriefer/griefer-security-platform/internal/api"
+	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -247,5 +251,70 @@ func TestAnIssuedAnchorChecksOutAndSaysWhereToKeepIt(t *testing.T) {
 	}
 	if report.Verdict != storage.AnchorEntryAltered {
 		t.Errorf("verdict = %q, want %q", report.Verdict, storage.AnchorEntryAltered)
+	}
+}
+
+// TestAdminOnlyRoutesAreWithdrawnWhenNoRoleCanBeEstablished.
+//
+// PrincipalMiddleware is mounted only when a credential is configured, so with
+// no INTERNAL_API_TOKEN RequireRole never sees a principal and admits every
+// caller. On loopback that caller is the operator, which is why it is allowed
+// and documented. On a routable address it is anyone who can reach the port —
+// and what they reach is the audit trail, the chain-integrity report and the
+// anchor endpoints.
+//
+// That is not a relaxed gate. It is a gate that is not there, so the routes are
+// withdrawn instead of served open.
+func TestAdminOnlyRoutesAreWithdrawnWhenNoRoleCanBeEstablished(t *testing.T) {
+	inner := newHarness(t, harnessOptions{skipInventory: true})
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	for _, tc := range []struct {
+		name       string
+		publicBind bool
+		withdrawn  bool
+	}{
+		{"loopback, no credential: the operator is the only caller", false, false},
+		{"routable, no credential: nobody can be given a role", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := api.NewRouter(inner.Service, api.RouterOptions{
+				MaxRequestBytes: 1 << 20, RateLimitRPS: 10000, RateLimitBurst: 10000,
+				Logger: logger, InternalAPIToken: "", PublicBind: tc.publicBind,
+			})
+			server := httptest.NewServer(handler)
+			t.Cleanup(server.Close)
+
+			for _, path := range []string{"/api/v1/audit", "/api/v1/audit/verify", "/api/v1/audit/anchor"} {
+				resp, err := server.Client().Get(server.URL + path)
+				if err != nil {
+					t.Fatalf("GET %s: %v", path, err)
+				}
+				_ = resp.Body.Close()
+				if tc.withdrawn {
+					if resp.StatusCode != http.StatusServiceUnavailable {
+						t.Errorf("GET %s = %d, want 503: the route is served on a routable "+
+							"address where no caller can be given a role", path, resp.StatusCode)
+					}
+					continue
+				}
+				// Served. 409 is the anchor endpoint on an empty chain, which is
+				// a real answer from the handler rather than a refusal by the
+				// gate — and it is the handler being reached that this asserts.
+				if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusConflict {
+					t.Errorf("GET %s = %d, want the handler to be reached", path, resp.StatusCode)
+				}
+			}
+
+			// An endpoint that is not role-gated is unaffected either way.
+			resp, err := server.Client().Get(server.URL + "/api/v1/incidents")
+			if err != nil {
+				t.Fatalf("GET incidents: %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("GET /api/v1/incidents = %d, want 200", resp.StatusCode)
+			}
+		})
 	}
 }

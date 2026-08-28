@@ -214,6 +214,7 @@ func run() error {
 		Registry: registry, MaxRequestBytes: cfg.HTTP.MaxRequestBytes,
 		RateLimitRPS: cfg.HTTP.RateLimitRPS, RateLimitBurst: cfg.HTTP.RateLimitBurst,
 		Logger: logger, InternalAPIToken: cfg.Auth.InternalAPIToken,
+		PublicBind: publicBind(cfg.HTTP.Addr),
 	})
 
 	server := &http.Server{
@@ -500,4 +501,19 @@ func logAuditChainState(ctx context.Context, logger *slog.Logger, store storage.
 		slog.Int64("unchained_entries", report.Unchained.Entries),
 		slog.Bool("externally_anchored", report.ExternallyAnchored),
 		slog.Any("warnings", report.Warnings))
+}
+
+// publicBind reports whether the configured listen address is routable.
+//
+// The router withdraws its role-gated endpoints when this is true and no
+// credential is configured, because PrincipalMiddleware is mounted only with a
+// credential — so in that combination RequireRole admits everybody, and the
+// audit trail answers anyone who can reach the port.
+func publicBind(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// An address this cannot parse is one nothing should assume is safe.
+		return true
+	}
+	return config.IsPublicBind(host)
 }

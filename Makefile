@@ -79,11 +79,18 @@ vet: ## Run go vet
 	$(GO) vet ./...
 
 .PHONY: lint
-lint: ## Run golangci-lint if it is installed
+lint: ## Run golangci-lint (falls back to go vet, loudly)
 	@if command -v golangci-lint >/dev/null 2>&1; then \
 		golangci-lint run ./...; \
 	else \
-		echo "golangci-lint is not installed; running go vet instead"; $(GO) vet ./...; \
+		echo ""; \
+		echo "  WARNING: golangci-lint is not installed."; \
+		echo "  Running go vet instead, which is a WEAKER check than CI runs."; \
+		echo "  A green result here does not mean this code would pass CI."; \
+		echo "  Install it with the version CI pins:"; \
+		echo "    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1"; \
+		echo ""; \
+		$(GO) vet ./...; \
 	fi
 
 .PHONY: policy-check
@@ -113,7 +120,7 @@ lint-console: console-install ## Lint the console
 	cd $(CONSOLE_DIR) && $(PNPM) lint
 
 .PHONY: check
-check: fmt-check vet policy-check test lint-console typecheck test-console ## Run every quality gate
+check: fmt-check vet lint policy-check test lint-console typecheck test-console ## Run every quality gate
 
 # ---------------------------------------------------------------------------
 # Local stack (Docker Compose)

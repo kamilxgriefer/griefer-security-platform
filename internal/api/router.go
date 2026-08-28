@@ -23,9 +23,21 @@ type RouterOptions struct {
 	RateLimitBurst int
 	Logger         *slog.Logger
 	// InternalAPIToken, when set, is required on every endpoint except the
-	// liveness and readiness probes. Empty leaves the API unauthenticated,
-	// which config.Validate only permits on a loopback bind.
+	// liveness and readiness probes.
+	//
+	// Empty leaves the API unauthenticated. config.Validate permits that on a
+	// loopback bind — and ALSO on a routable one, if the operator sets
+	// GRIEFER_ALLOW_PUBLIC_BIND to say so out loud. This comment used to claim
+	// loopback was the only case, which mattered because of what the other case
+	// does to the role gate: PrincipalMiddleware is mounted only when a token
+	// is configured, so with no token RequireRole never sees a principal and
+	// admits every caller. On a routable interface that serves the audit trail
+	// and the chain-integrity report to anyone who can reach the port.
 	InternalAPIToken string
+	// PublicBind is true when the server listens on a routable address. With no
+	// InternalAPIToken it makes the role gate unenforceable, and the role-gated
+	// routes are withdrawn rather than served open.
+	PublicBind bool
 }
 
 // NewRouter builds GRIEFER's HTTP handler.
@@ -90,10 +102,44 @@ func NewRouter(svc *Service, opts RouterOptions) http.Handler {
 	mux.Handle("GET /api/v1/entities/{id}", read("/api/v1/entities/{id}", svc.handleGetEntity))
 	mux.Handle("GET /api/v1/actions", read("/api/v1/actions", svc.handleListActions))
 	mux.Handle("GET /api/v1/actions/{id}", read("/api/v1/actions/{id}", svc.handleGetAction))
+	// adminOnly wraps a role-gated route, and withdraws it entirely in the one
+	// configuration where the role gate cannot work.
+	//
+	// PrincipalMiddleware is mounted only when a credential is configured, so
+	// with no token RequireRole sees the zero principal and admits everyone.
+	// That is deliberate and documented on loopback, where the caller is the
+	// operator. On a routable address it means the audit trail and the
+	// chain-integrity report answer anyone who reaches the port, which is not a
+	// gate that has been relaxed — it is a gate that is not there.
+	//
+	// 503 rather than 403: nothing is wrong with the request, the deployment
+	// cannot authorise it, and the message says what to set.
+	adminOnly := func(h http.Handler) http.Handler {
+		if opts.InternalAPIToken == "" && opts.PublicBind {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				httpx.WriteError(w, r, http.StatusServiceUnavailable, httpx.CodeDependencyDegraded,
+					"Administrator-only endpoints are withdrawn: this deployment listens on a "+
+						"routable address with no INTERNAL_API_TOKEN, so no caller can be "+
+						"attributed a role. Configure the credential to enable them.", nil)
+			})
+		}
+		return httpx.RequireRole(RoleAdmin)(h)
+	}
+
+	// throttledRead applies the write-path limiter to a read that is expensive.
+	//
+	// Read endpoints are deliberately unthrottled so an analyst refreshing a
+	// console is never throttled out of an investigation. Chain verification is
+	// not that: it scans audit_log end to end while holding a pooled
+	// connection, and audit_log is a table a producer can grow.
+	throttledRead := func(route string, h http.HandlerFunc) http.Handler {
+		return httpx.Chain(svc.metrics.instrument(route, h), limiter.Middleware)
+	}
+
 	// The audit trail is administrator-only at the API as well as in the
 	// console. One layer is one bug away from being none.
 	mux.Handle("GET /api/v1/audit",
-		httpx.RequireRole(RoleAdmin)(read("/api/v1/audit", svc.handleListAudit)))
+		adminOnly(read("/api/v1/audit", svc.handleListAudit)))
 	// Administrator-only for the same reason, and gated no more tightly than
 	// the trail it reports on: RequireRole admits a caller holding the service
 	// credential with no actor assertion, which is the platform's own internals
@@ -108,7 +154,7 @@ func NewRouter(svc *Service, opts RouterOptions) http.Handler {
 	// dashboard.
 	mux.Handle("GET /api/v1/audit/verify",
 		svc.metrics.instrument("/api/v1/audit/verify",
-			httpx.RequireRole(RoleAdmin)(http.HandlerFunc(svc.handleVerifyAudit))))
+			adminOnly(throttledRead("/api/v1/audit/verify", svc.handleVerifyAudit))))
 	// An anchor is issued for the operator to keep OUTSIDE this database, and
 	// checked back against it later. Administrator-only on both verbs, like the
 	// trail itself.
@@ -119,9 +165,9 @@ func NewRouter(svc *Service, opts RouterOptions) http.Handler {
 	// error anywhere.
 	mux.Handle("GET /api/v1/audit/anchor",
 		svc.metrics.instrument("/api/v1/audit/anchor",
-			httpx.RequireRole(RoleAdmin)(http.HandlerFunc(svc.handleIssueAuditAnchor))))
+			adminOnly(http.HandlerFunc(svc.handleIssueAuditAnchor))))
 	mux.Handle("POST /api/v1/audit/anchor",
-		httpx.RequireRole(RoleAdmin)(write("/api/v1/audit/anchor", svc.handleCheckAuditAnchor)))
+		adminOnly(write("/api/v1/audit/anchor", svc.handleCheckAuditAnchor)))
 	mux.Handle("GET /api/v1/system/status", read("/api/v1/system/status", svc.handleSystemStatus))
 
 	// Anything unmatched gets a JSON 404 rather than net/http's text default,

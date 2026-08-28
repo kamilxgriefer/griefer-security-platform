@@ -363,6 +363,19 @@ type EvaluateRequest struct {
 // Every path out of this function leaves an audit entry, including the ones
 // that reject the request before a policy is consulted. An evaluation that
 // produced no trail is indistinguishable, later, from one that never happened.
+// maxIdentifierBytes bounds an identifier a caller supplies and the platform
+// echoes back into durable storage.
+const maxIdentifierBytes = 128
+
+// boundIdentifier truncates an over-long identifier and says that it did, so
+// the record does not silently claim the caller sent the shorter value.
+func boundIdentifier(s string) string {
+	if len(s) <= maxIdentifierBytes {
+		return s
+	}
+	return s[:maxIdentifierBytes] + "...(truncated)"
+}
+
 func (s *Service) EvaluateAction(ctx context.Context, req EvaluateRequest) (*incidents.ResponseAction, error) {
 	requestID := httpx.RequestIDFromContext(ctx)
 
@@ -376,6 +389,23 @@ func (s *Service) EvaluateAction(ctx context.Context, req EvaluateRequest) (*inc
 	if actor == "" {
 		actor = auditSystemActor
 	}
+
+	// Bounded before anything echoes them.
+	//
+	// action_type and incident_id are attacker-chosen, and a rejection puts
+	// action_type verbatim into action.Reason — stored on the response action
+	// AND in two audit entries. The audit trail is append-only, so those rows
+	// cannot be reclaimed: the trigger that makes the trail trustworthy is the
+	// same trigger that makes a megabyte of nonsense per request a permanent
+	// cost. The 1 MiB body limit was the only thing bounding it.
+	//
+	// Truncated rather than refused, because the entry must still be written:
+	// somebody asking GRIEFER to run an action is exactly what the trail is
+	// for, and refusing here would drop the record of the attempt. A catalog
+	// action type and a GRIEFER identifier are both far below the bound, so a
+	// value that reaches it is not one either was.
+	req.ActionType = boundIdentifier(req.ActionType)
+	req.IncidentID = boundIdentifier(req.IncidentID)
 
 	mode := incidents.Mode(req.Mode)
 	if mode == "" {

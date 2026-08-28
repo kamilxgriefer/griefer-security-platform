@@ -170,6 +170,29 @@ func (s *Service) Ingest(ctx context.Context, raw []byte) (IngestResult, error) 
 		s.logger.ErrorContext(ctx, "failed to persist event",
 			slog.String("request_id", requestID), slog.String("event_id", ev.ID),
 			slog.String("error", err.Error()))
+		// This was the ONE failure path in Ingest that recorded nothing.
+		// Schema validation, normalization and correlation all leave an entry;
+		// a persistence failure left only a log line, so the trail could not
+		// distinguish "no such event was ever submitted" from "one was, and
+		// GRIEFER could not keep it". A producer able to make this insert fail
+		// therefore had a way to act without appearing in the record at all.
+		//
+		// The error text is deliberately NOT the reason: it is driver output,
+		// and CONTRIBUTING.md keeps that out of anything a client can read. It
+		// is already in the log, keyed by request id.
+		s.recordAudit(ctx, audit.Entry{
+			Action: audit.ActionEventRejected, SubjectType: audit.SubjectEvent,
+			SubjectID: ev.ID, Outcome: audit.OutcomeFailure, RequestID: requestID,
+			Reason: "event could not be persisted; it was not stored and has not been correlated",
+			Details: map[string]any{
+				"error_kind": "storage",
+				// The emitter ResultPersistenceFailed was declared for and had
+				// not had until now.
+				"result":      audit.ResultPersistenceFailed,
+				"source_type": string(ev.SourceType),
+				"source_name": ev.SourceName,
+			},
+		})
 		return IngestResult{}, fmt.Errorf("persist event: %w", err)
 	}
 	s.metrics.EventsIngested.WithLabelValues(string(ev.Category)).Inc()

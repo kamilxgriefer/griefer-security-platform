@@ -15,10 +15,15 @@ describe("AuditTrail", () => {
     expect(rows[1]).toHaveTextContent(/non-destructive and reversible/i);
   });
 
-  it("is honest that v0.1 is tamper-resistant rather than tamper-evident", () => {
+  it("states both what the chain detects and what it is not evidence against", () => {
     render(<AuditTrail entries={auditEntries} />);
 
-    expect(screen.getByText(/tamper-resistant, not tamper-evident/i)).toBeInTheDocument();
+    // Both halves are pinned. The claim alone would overstate what a chain
+    // stored beside the entries it protects can prove, and the caveat alone
+    // would undersell a check that does detect an alteration.
+    expect(screen.getByText(/hash-chained/i)).toBeInTheDocument();
+    expect(screen.getByText(/not externally anchored/i)).toBeInTheDocument();
+    expect(screen.getByText(/not evidence against whoever controls the database/i)).toBeInTheDocument();
   });
 
   it("distinguishes an empty trail from an unreachable one", () => {

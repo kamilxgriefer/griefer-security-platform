@@ -265,9 +265,10 @@ tool.
   policy contract can be exercised, and always resolves to "requires approval".
 - **No authentication or authorization.** The API binds loopback and refuses a
   public interface unless explicitly overridden. Do not expose it. → M8
-- **Tamper-resistant audit, not tamper-evident.** Append-only by interface and by
-  database trigger; a role with DDL rights can still rewrite history. Hash
-  chaining is → M4
+- **Hash-chained audit, not externally anchored.** Every entry links to its
+  predecessor and `GET /api/v1/audit/verify` reports the first broken link; but
+  the chain lives in the same database as the entries, so a role that can rewrite
+  the table can rewrite the chain with it. Anchoring the head off-host is → M4
 - **The Security Graph is in memory** and rebuilt on start. → M2
 - **No real connectors.** Every event is synthetic. → M4, M5
 - **OCSF-inspired, not OCSF-conformant.** The event schema borrows the OCSF
@@ -286,7 +287,7 @@ tool.
 | **M1** | Event ingestion and normalization | ✅ v0.1 |
 | **M2** | Correlation and persistent Security Graph | ◐ in-memory in v0.1 |
 | **M3** | Policy-governed response | ◐ simulation in v0.1 |
-| **M4** | Identity integration (read-only Entra ID) + tamper-evident audit | ○ next |
+| **M4** | Identity integration (read-only Entra ID) + audit anchoring | ◐ chain shipped; anchoring next |
 | **M5** | Endpoint telemetry and native Sigma evaluation | ○ |
 | **M6** | Continuous defense validation + OCSF conformance | ○ |
 | **M7** | AI-assisted investigation, strictly outside the policy path | ○ |

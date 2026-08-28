@@ -206,7 +206,7 @@ graph facts against the inventory rather than trusting telemetry is → M2.
 
 **An attacker erases the record** to make an incident unexplainable.
 
-*Mitigated in v0.1*
+*Partially mitigated in v0.1*
 
 - `audit.Sink` exposes only `Append` and `List`. There is no update and no delete
   in the type system, and `TestSinkExposesNoMutationMethods` fails if anyone adds
@@ -218,22 +218,40 @@ graph facts against the inventory rather than trusting telemetry is → M2.
 - `purge_audit_records` exists in the catalog *specifically* so that the deny path
   is exercised by a real request. It is denied unconditionally.
 
+- Entries are hash-chained: each carries `prev_hash` and `entry_hash` over its
+  canonical serialisation, so an alteration or a removal that got past the
+  trigger is visible. `GET /api/v1/audit/verify` reports the first break. Its
+  linkage check is full-scope on every call; its content check — the one that
+  catches an edit that leaves the stored hashes alone — covers a bounded
+  window, and the response warns when that was less than the whole chain.
+  Detection is proven against a real database by `TestEditingAnEntryIsDetected`,
+  `TestDeletingAnEntryFromTheMiddleIsDetected` and
+  `TestDeletingThePrefixOfTheTrailIsDetected`.
+
 *Not mitigated*
 
-- **This is tamper-RESISTANT, not tamper-EVIDENT.** A role with DDL rights can drop
-  the trigger and rewrite history. The reset helper in the test suite does exactly
-  that with `TRUNCATE`, which is an honest demonstration of the limit.
+- **The chain is stored beside the entries.** No secret enters the computation,
+  so a role that can rewrite `audit_log` can recompute every hash after an edit
+  and `verify` will report the result intact. This raises the cost of the attack
+  from one statement to a full-table rewrite; it does not make it detectable.
+- **Truncation to empty.** An empty chain is a valid chain. `verify` reports
+  `empty` rather than `consistent`, which is a distinction an operator can act on
+  and not a mitigation.
+- **Tail truncation.** A trail with its tail removed is a shorter chain whose
+  every link checks out. `audit_chain_head` catches it, and whoever deleted the
+  rows can rewrite that row too — so it is a tripwire against accident and
+  partial restore, not against an adversary.
 - **No off-host replication.**
 
-*Planned — M4.* Each entry carries `prev_hash` and `entry_hash` over its
-canonical serialisation, forming a chain. Removing or altering an entry breaks
-verification at that point. The chain head is periodically written to
-append-only external storage, so an attacker who controls the database still
-cannot produce a consistent altered history. `GET /api/v1/audit/verify` returns
-the first broken link.
+*Planned — M4.* Periodic anchoring of the chain head to append-only external
+storage, under a different authority than the database. Comparing the head
+against a value the database role cannot reach is what turns *consistent* into
+*unaltered*.
 
-*Residual.* Significant with database admin access. Detectable only by gap
-inspection today.
+*Residual.* Reduced but still significant with database admin access: an
+adversary who rewrites the whole suffix is undetectable from inside this
+database. Any `entry_hash` kept outside it would disagree with the rewrite,
+which is a real property and one that depends on someone having kept a copy.
 
 ## T8 — Malicious update
 

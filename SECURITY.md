@@ -78,7 +78,7 @@ vulnerabilities:
 |---|---|
 | No authentication or authorization | M8 |
 | No producer authentication — anyone with network reach can submit events | M4 |
-| Audit is tamper-resistant, not tamper-evident | M4 |
+| Audit chain is not externally anchored — a database role can rewrite it consistently | M4 |
 | No release signing or build provenance | M8 |
 | No detection of a sensor going silent | M4/M5 |
 | Security Graph is in memory and lost on restart | M2 |

@@ -266,7 +266,8 @@ verdicts and counts only.
 
 ### Tamper-evidence — the honest position
 
-**v0.1 is tamper-RESISTANT. It is not tamper-EVIDENT.**
+**The chain detects alteration. It does not prove authenticity, because it is
+stored beside the thing it protects.**
 
 What exists:
 
@@ -275,22 +276,74 @@ What exists:
 - A PostgreSQL trigger raises on `UPDATE` and `DELETE`, proven against a real
   database by `TestPostgresAuditLogRejectsUpdateAndDelete`.
 - Database-assigned sequence numbers make a removed row a visible gap.
+- Each entry carries `prev_hash` and `entry_hash`: SHA-256 over the entry's
+  canonical serialisation together with its predecessor's hash.
+- `GET /api/v1/audit/verify` walks the chain and reports the first broken link.
+  Its linkage check covers the whole chain; its content check — the one that
+  catches an entry edited without rehashing — covers a bounded window, newest
+  first, and reports the range it examined. Sweeping older pages is a deliberate
+  act, described in the runbook.
 
-What does not exist: a role with DDL rights can drop the trigger and rewrite
-history. The test suite's own reset helper does exactly that with `TRUNCATE`,
-which is an honest demonstration of the boundary.
+What that is worth, stated precisely. `verify` answers *is this trail internally
+consistent*, not *is this trail the one GRIEFER wrote*. The hash function and the
+canonical form are both in this repository and no secret enters the computation,
+so a role that can write to `audit_log` can alter an entry, recompute every hash
+after it, and `verify` will report the result intact.
 
-**Planned for M4:**
+So the chain is evidence against everything that does not rewrite the whole
+suffix — a single `DELETE`, a targeted deletion, an insert into the past, a
+divergent restore, storage corruption — and it raises the cost of the remaining
+case from one statement to a full-table rewrite.
 
-1. Each entry carries `prev_hash` (the previous entry's hash) and `entry_hash`
-   (SHA-256 over its canonical serialisation plus `prev_hash`).
-2. Any removal or alteration breaks the chain at that point.
-3. The chain head is periodically written to append-only external storage, so an
-   attacker who controls the database cannot produce a consistent altered history.
-4. `GET /api/v1/audit/verify` walks the chain and returns the first broken link.
+A single `UPDATE` that leaves the stored hashes alone is in that set with one
+qualification worth stating rather than burying: it breaks no *link*, so it is
+caught by the content check, and the content check runs over a bounded window.
+`verify` finds it immediately while the altered row is recent, and further back
+it has to be swept for, page by page. The row stays altered and stays findable;
+what is bounded is how much one call recomputes. The response says which
+sequence range it examined, and warns when that was less than the whole chain. It is not evidence
+against the database role itself. One thing survives even that: an `entry_hash`
+recorded anywhere outside this database disagrees with the rewritten chain, so a
+single exported page is enough to catch it. That is a real property and a thin
+one, because it depends on someone having kept a copy.
 
-Chaining alone is not enough — an attacker who can rewrite the table can rewrite
-the whole chain. External anchoring is what makes it evidence.
+Four limits follow from the mechanism and are not fixed by more hashing:
+
+- A trail truncated to empty is consistent, because an empty chain is a valid
+  chain. Removing a prefix *is* caught — the oldest surviving entry names a
+  predecessor that is not there — but removing everything is not. `verify`
+  reports `empty` rather than `consistent` so the two cannot be confused.
+- A trail with its tail removed is a shorter chain whose every link checks out.
+  `audit_chain_head` records the head inside the same transaction as the append,
+  so `verify` reports a head that is ahead of the trail — but anyone who can
+  delete the rows can also rewrite that row. It catches accident and partial
+  restore, not an adversary.
+- An entry *added* at the end is not detectable at all. The canonical form is in
+  this repository and no secret enters it, so anyone who can `INSERT` can compute
+  a well-formed link onto the current head, and the chain continues over it. The
+  chain says the trail has not been broken; it does not say every entry in it was
+  written by GRIEFER. Producer authentication and per-caller credentials are what
+  would speak to that, and both are later milestones.
+- The chain constrains the entries that were written. An entry that was never
+  written leaves no gap in it, so the best-effort persistence path in
+  [`docs/security/AUDIT_MODEL.md`](security/AUDIT_MODEL.md) is exactly as visible
+  as it was before. The chain proves the trail is uninterrupted, not that it is
+  complete.
+- Rows written before M4 carry no hashes and never will. Backfilling them would
+  require an `UPDATE` — dropping the very trigger being strengthened — and would
+  attest to nothing about the past. They are reported as `unchained`, which means
+  covered by neither check.
+
+**Still M4:** periodic anchoring of the chain head to append-only external
+storage. Comparing the head against a value the database role cannot reach is
+what turns *consistent* into *unaltered*. Until it lands, do not call this trail
+tamper-evident without saying against whom.
+
+The decision, its cost and the alternatives are in
+[ADR 0007](adr/0007-hash-chained-audit-without-anchor.md). How to read a
+verification result at three in the morning — including which answers are boring
+and which are not — is in
+[the triage runbook](operations/AUDIT_CHAIN_RUNBOOK.md).
 
 ## AI and executive authority
 

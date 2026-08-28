@@ -22,8 +22,10 @@ export function AuditTrail({
       <header>
         <h1 className="text-lg font-semibold">Audit trail</h1>
         <p className="mt-1 text-[13px] text-[var(--color-text-secondary)]">
-          Append-only record of every decision GRIEFER made and why. Oldest first. In v0.1 the trail
-          is tamper-resistant, not tamper-evident — see docs/SAFETY_MODEL.md.
+          Append-only record of every decision GRIEFER made and why. Oldest first. Entries are
+          hash-chained, so an alteration is detectable — but the chain is stored beside the entries
+          and is not externally anchored, so it is not evidence against whoever controls the
+          database. See docs/SAFETY_MODEL.md.
         </p>
       </header>
 

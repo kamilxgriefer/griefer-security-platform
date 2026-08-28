@@ -15,7 +15,7 @@ timelines it cannot keep would be the first dishonest thing in the repository.
 | **M1** | Event ingestion and normalization | ✅ Complete |
 | **M2** | Correlation and Security Graph | ◐ Correlation done; graph is in-memory |
 | **M3** | Policy-governed response | ◐ Policy done; response is simulation-only |
-| **M4** | Identity integration and tamper-evident audit | ○ Next |
+| **M4** | Identity integration and tamper-evident audit | ◐ Chain shipped; anchoring and Entra ID open |
 | **M5** | Endpoint telemetry | ○ |
 | **M6** | Continuous defense validation | ○ |
 | **M7** | AI-assisted investigation | ○ |
@@ -91,10 +91,15 @@ rollback plans; every decision audited.
 **Done when:** an action executes against a lab tenant, is rolled back, and both
 are in the audit trail with their reasoning — and break-glass stops it mid-flight.
 
-## ○ M4 — Identity integration and tamper-evident audit
+## ◐ M4 — Identity integration and tamper-evident audit
 
-The next milestone. Two things, because the first is what makes GRIEFER useful on
-real data and the second is what makes its record trustworthy.
+In progress. Two things, because the first is what makes GRIEFER useful on real
+data and the second is what makes its record trustworthy.
+
+The chain and its verification endpoint have shipped; anchoring has not, and
+without it the chain detects alteration without proving authenticity. The
+milestone does not close on a half — see
+[ADR 0007](adr/0007-hash-chained-audit-without-anchor.md).
 
 **Read-only Microsoft Entra ID connector**
 
@@ -110,11 +115,11 @@ real data and the second is what makes its record trustworthy.
 
 **Tamper-evident audit**
 
-- [ ] `prev_hash` and `entry_hash` chaining over canonical serialisation
+- [x] `prev_hash` and `entry_hash` chaining over canonical serialisation
 - [ ] Periodic chain-head anchoring to append-only external storage — chaining
       alone is insufficient, since whoever can rewrite the table can rewrite the
       chain
-- [ ] `GET /api/v1/audit/verify` returning the first broken link
+- [x] `GET /api/v1/audit/verify` returning the first broken link
 - [ ] Producer authentication (mTLS or signed tokens), closing **T1**
 
 **Done when:** GRIEFER correlates real Entra ID telemetry from a lab tenant, and

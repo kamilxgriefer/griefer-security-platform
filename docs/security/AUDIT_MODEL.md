@@ -10,7 +10,7 @@ question. Where a decision is a compromise, it is written down as one rather
 than dressed up.
 
 Related reading: [`docs/SAFETY_MODEL.md`](../SAFETY_MODEL.md) for the failure
-philosophy and the M4 tamper-evidence plan;
+philosophy and what the hash chain is and is not evidence of;
 [`docs/ACCESS_CONTROL.md`](../ACCESS_CONTROL.md) for the console's role model.
 
 ---
@@ -116,9 +116,13 @@ believes the trail is complete will draw conclusions from its silence.
   operator's session happened to relay it would be a fiction.
 - **`incident.created` is declared and never emitted.** The correlator returns
   one incident whether it created or merged, so every correlation records
-  `incident.updated`. The constant is reserved, not live. Likewise
-  `insufficient_permission` and `persistence_failed` are declared results with
-  no production emitter yet — nothing in v0.1 reaches them.
+  `incident.updated`. The constant is reserved, not live. `insufficient_permission`
+  is likewise declared with no production emitter yet.
+
+  `persistence_failed` gained one: `Ingest` records an `event.rejected` entry
+  when `SaveEvent` fails. That path used to be the only failure in `Ingest` that
+  recorded nothing at all, which meant the trail could not tell "no such event
+  was ever submitted" from "one was, and GRIEFER could not keep it".
 
 ---
 
@@ -153,7 +157,7 @@ kernel is down.
 | `policy_timeout` | Kernel error wrapping `context.DeadlineExceeded` | `denied` |
 | `internal_error` | Incident could not be loaded | `failure` |
 | `insufficient_permission` | *Reserved; no emitter in v0.1* | — |
-| `persistence_failed` | *Reserved; no emitter in v0.1* | — |
+| `persistence_failed` | The event could not be stored | `event.rejected` |
 
 `policy_timeout` is separated from `policy_unavailable` because the two send an
 operator to different places: one is a slow or overloaded kernel, the other is a
@@ -483,16 +487,48 @@ approval without calling the store at all.
 
 ---
 
+## 10a. An entry is never lost to its own content
+
+`audit.SanitiseEntry` replaces characters a PostgreSQL `TEXT` column cannot hold
+— a NUL byte, an invalid UTF-8 sequence — and records the changed field names in
+`Details["sanitised_fields"]`. It replaces; it never refuses.
+
+That distinction is a security property, not a nicety. Not every field on an
+entry is platform-generated: `Reason` on an accepted event is built from the
+producer's own `source_name`, which the ingest schema bounds in length but not in
+content, and `SubjectID` carries a producer-supplied event id. A NUL byte in
+either is valid JSON and passes ingest validation. If the audit path refused such
+an entry, `recordAudit` would log the failed write and carry on — and anyone able
+to submit a single event could have it processed with nothing in the trail
+describing it.
+
+Losing a character of an attacker-chosen name is a far smaller loss than losing
+the record that they acted.
+`TestAnEntryWithAProducerControlCharacterIsStillRecorded` proves it against a
+real database, and also proves the chain still verifies afterwards: sanitising
+after hashing rather than before would show up there as a content mismatch.
+
+The same reasoning bounds `Details` by replacement rather than refusal — see
+`boundDetails` and `MaxDetailsBytes`.
+
+---
+
 ## 11. Honest limits
 
-**The trail is tamper-resistant, not tamper-evident.** Nothing above detects a
-change made by someone with database access; it only stops changes made through
-the platform. A role with DDL rights can drop the trigger and rewrite history,
-and nothing in v0.1 would show it. Hash-chaining each entry to its predecessor
-and anchoring the chain externally is M4 — the plan is in
-[`docs/SAFETY_MODEL.md`](../SAFETY_MODEL.md). Chaining alone would not be enough;
-an attacker who can rewrite the table can rewrite the chain, so external
-anchoring is what turns resistance into evidence.
+**The chain detects alteration; it does not prove authenticity.** Each entry
+carries its predecessor's hash and `GET /api/v1/audit/verify` recomputes the
+links, so a `DELETE` that got past the trigger is visible on every call, and an
+`UPDATE` is visible while it is inside the content window the call recomputed --
+the response warns when that window covered less than the whole chain.
+But the chain is stored in the same database as the entries and no secret enters
+the computation, so a role that can rewrite the table can recompute the chain
+with it and `verify` will report the result intact. What that buys is a raised
+cost — from one statement to a full-table rewrite — not evidence against the
+database role. Anchoring the chain head to storage under a different authority is
+what would close it, and it has not shipped. The limits are enumerated in
+[`docs/SAFETY_MODEL.md`](../SAFETY_MODEL.md) and the decision in
+[ADR 0007](../adr/0007-hash-chained-audit-without-anchor.md); triage is in
+[the runbook](../operations/AUDIT_CHAIN_RUNBOOK.md).
 
 **`TRUNCATE` bypasses the row trigger.** The trigger is `FOR EACH ROW`, and
 `TRUNCATE` is a table-level operation that fires no row triggers. The test

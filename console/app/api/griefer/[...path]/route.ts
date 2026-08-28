@@ -29,6 +29,10 @@ const ALLOWED_EXACT: Record<string, readonly string[]> = {
     "events",
     "actions",
     "audit",
+    // Two segments, so it is matched as a literal rather than as audit/<id>.
+    // Without this entry resolveTarget returns null and the console 404s
+    // before the API is ever asked.
+    "audit/verify",
   ],
   POST: ["actions/evaluate"],
 };

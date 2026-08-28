@@ -381,6 +381,9 @@ paths:
         Oldest first, so the trail reads as a narrative. The trail is
         append-only: there is no endpoint that updates or deletes an entry, and
         the database refuses both.
+
+        Entries are hash-chained. Each carries `prev_hash` and `entry_hash`;
+        `GET /api/v1/audit/verify` recomputes the links. Administrator-only.
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Offset"
@@ -397,6 +400,45 @@ paths:
                       items:
                         type: array
                         items: { $ref: "#/components/schemas/AuditEntry" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/audit/verify:
+    get:
+      tags: [Audit]
+      summary: Verify the audit trail's internal consistency
+      description: |
+        Recomputes the chain's links over the whole trail, and each entry's
+        content hash over a bounded window. Administrator-only.
+
+        **What a green result means, and what it does not.** It attests that
+        the entries examined are internally consistent. It does NOT attest
+        authenticity: the chain is stored in the same database as the entries
+        and no secret enters the computation, so a role that can rewrite the
+        table can recompute the chain with it. Anchoring the chain head to
+        storage under a different authority has not shipped, which is why
+        `externally_anchored` is present and always `false`.
+
+        Answers `200` in every case, a broken chain included. A `5xx` for
+        "broken" would be indistinguishable from the endpoint being down; a
+        `500` here means only that the check could not be run.
+
+        Recording `linkage.head_hash` somewhere outside this database is what
+        turns *consistent* into *unaltered*, because a wholesale rewrite cannot
+        reach a copy it does not control.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: |
+            The verification result. Read `status`, not the HTTP code: a broken
+            chain is reported here, not as an error.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditChainReport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
 components:
   parameters:
@@ -411,6 +453,23 @@ components:
       schema: { type: integer, minimum: 0, default: 0 }
 
   responses:
+    Unauthorized:
+      description: |
+        No service credential was presented, or it did not match. Returned
+        before any role is consulted, so that a caller cannot learn from the
+        status code that a path exists and that role is the only obstacle.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Forbidden:
+      description: |
+        The asserted operator role is not permitted here. Note the documented
+        limit: a caller holding the service credential and asserting no
+        operator is admitted, so this gate binds the console rather than the
+        credential. See docs/security/AUDIT_MODEL.md.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
     ValidationFailed:
       description: The request was rejected at the trust boundary.
       content:
@@ -478,6 +537,8 @@ components:
                 - rate_limited
                 - unsupported_media_type
                 - method_not_allowed
+                - unauthorized
+                - forbidden
                 - internal_error
                 - dependency_degraded
                 - not_implemented
@@ -924,6 +985,132 @@ components:
         details:
           type: object
           description: Identifiers, verdicts and counts. Never credential material or raw telemetry.
+        chain_id:
+          type: string
+          description: |
+            The chain this entry belongs to, minted once per database. Two
+            trails that disagree about it are two different trails however
+            alike their contents look.
+        prev_hash:
+          type: string
+          description: |
+            The predecessor's `entry_hash`.
+
+            Absent on the entry that starts the chain, and absent on an entry
+            written before the chain existed -- the field is omitted when
+            empty, so those two do not differ here. `entry_hash` is what
+            separates them: a chain-starting entry has one, an entry from
+            before the chain does not. An entry with no `entry_hash` is outside
+            the chain, which is neither verified nor broken.
+        entry_hash:
+          type: string
+          description: SHA-256 over the entry's canonical serialisation together with `prev_hash`.
+
+    AuditChainBreak:
+      type: object
+      required: [kind, sequence, id, detail]
+      properties:
+        kind:
+          type: string
+          enum:
+            - missing_predecessor
+            - link_mismatch
+            - content_mismatch
+            - unexpected_genesis
+            - unchained_after_chain_start
+            - foreign_chain
+          description: |
+            `missing_predecessor` is what removing a prefix of the trail looks
+            like. `link_mismatch` is a row removed or inserted mid-chain.
+            `content_mismatch` is an entry edited without rehashing.
+            `unchained_after_chain_start` is a row written by something that is
+            not a current binary. `foreign_chain` is a chained row belonging to
+            another chain: the one insertion that passes both other checks
+            unaided, because linkage walks a single chain and content recomputes
+            each row against its own.
+        sequence: { type: integer }
+        id: { type: string }
+        detail: { type: string, description: Safe to display. }
+
+    AuditChainReport:
+      type: object
+      required: [store, chain_id, status, warnings, linkage, content, unchained, externally_anchored, attests]
+      properties:
+        store:
+          type: string
+          description: |
+            Which implementation answered. The memory store has no trigger, no
+            durability, and a chain recomputed by the process that wrote it;
+            without this field that result would read as the PostgreSQL one.
+        chain_id: { type: string }
+        status:
+          type: string
+          enum: [consistent, broken, unchained, unverifiable, empty]
+          description: |
+            A status rather than a `valid` boolean, and `empty` is distinct
+            from `consistent`: an empty chain is a valid chain, so a truncated
+            trail reporting intact would be the most misleading thing this
+            endpoint could say.
+        warnings:
+          type: array
+          description: Empty, never null.
+          items: { type: string }
+        linkage:
+          type: object
+          description: Stored hashes compared against stored hashes, over the whole chain.
+          properties:
+            scope: { type: string, enum: [full] }
+            entries: { type: integer }
+            first_sequence: { type: integer }
+            head_sequence: { type: integer }
+            head_hash: { type: string }
+            break:
+              nullable: true
+              allOf: [{ $ref: "#/components/schemas/AuditChainBreak" }]
+        content:
+          type: object
+          description: |
+            Each entry's hash recomputed from its own content, over a bounded
+            window. The window is reported so a caller cannot read a windowed
+            result as a whole-trail result.
+          properties:
+            scope: { type: string, enum: [window] }
+            from_sequence: { type: integer }
+            to_sequence: { type: integer }
+            entries: { type: integer }
+            unverifiable:
+              type: integer
+              description: Rows written by a newer canonical form than this build implements.
+            break:
+              nullable: true
+              allOf: [{ $ref: "#/components/schemas/AuditChainBreak" }]
+        unchained:
+          type: object
+          description: Rows written before the chain existed. Covered by neither check.
+          properties:
+            entries: { type: integer }
+            last_sequence: { type: integer }
+            note: { type: string }
+        recorded_head:
+          nullable: true
+          type: object
+          description: |
+            The head the database recorded as it wrote. It is the only thing
+            inside the database that can be ahead of the trail, which is the
+            signature of truncation or a partial restore -- and anyone who can
+            delete the rows can rewrite it too, so it catches accident, not an
+            adversary. Null on the memory store.
+          properties:
+            sequence: { type: integer }
+            hash: { type: string }
+            updated_at: { type: string, format: date-time }
+            matches_trail: { type: boolean }
+        externally_anchored:
+          type: boolean
+          description: Always false in v0.1. On the wire so the missing half of the guarantee travels with every response.
+        attests:
+          type: string
+          description: A fixed sentence stating what a green result is and is not evidence of.
 
     ComponentStatus:
       type: object

@@ -94,6 +94,21 @@ func NewRouter(svc *Service, opts RouterOptions) http.Handler {
 	// console. One layer is one bug away from being none.
 	mux.Handle("GET /api/v1/audit",
 		httpx.RequireRole(RoleAdmin)(read("/api/v1/audit", svc.handleListAudit)))
+	// Administrator-only for the same reason, and gated no more tightly than
+	// the trail it reports on: RequireRole admits a caller holding the service
+	// credential with no actor assertion, which is the platform's own internals
+	// and the demonstration script. Tightening only this route would break them
+	// while buying nothing with GET /api/v1/audit open beside it. The role gate
+	// binds the console; the credential is the trust boundary. Per-caller
+	// credentials are M8.
+	//
+	// instrument sits OUTSIDE the role gate here. Wrapped the other way, a
+	// refusal returns before the counter runs — and on an integrity endpoint
+	// "nobody could call it" and "nobody called it" must not look the same on a
+	// dashboard.
+	mux.Handle("GET /api/v1/audit/verify",
+		svc.metrics.instrument("/api/v1/audit/verify",
+			httpx.RequireRole(RoleAdmin)(http.HandlerFunc(svc.handleVerifyAudit))))
 	mux.Handle("GET /api/v1/system/status", read("/api/v1/system/status", svc.handleSystemStatus))
 
 	// Anything unmatched gets a JSON 404 rather than net/http's text default,

@@ -31,7 +31,16 @@ describe("roles", () => {
   it("keeps an analyst out of the same resources through the API", () => {
     // Gating the page but not the route it calls would leave the data readable
     // by anyone who opened the network tab.
-    for (const path of ["/api/griefer/audit", "/api/griefer/audit/1", "/api/griefer/identity/users"]) {
+    for (const path of [
+      "/api/griefer/audit",
+      "/api/griefer/audit/1",
+      // The integrity endpoint publishes the trail's size and its head hash.
+      // It sits under the audit prefix so this rule already covers it; the case
+      // is written out because a future move out of that prefix would silently
+      // open it.
+      "/api/griefer/audit/verify",
+      "/api/griefer/identity/users",
+    ]) {
       expect(mayAccess("analyst", path)).toBe(false);
     }
   });

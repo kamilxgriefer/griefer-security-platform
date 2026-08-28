@@ -432,6 +432,29 @@ func (s *Service) handleListAudit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleVerifyAudit reports whether the audit trail is internally consistent.
+//
+// It answers 200 in every case, including a broken chain. A 5xx for "broken"
+// would be indistinguishable from the endpoint being down, and an integrity
+// check whose bad news looks like an outage is one nobody can act on. A 500
+// here means only that the check could not be run.
+//
+// It writes no audit entry. Reads leave no trace by design, and a verification
+// that appended would move the head of the chain it had just verified on every
+// read of it.
+func (s *Service) handleVerifyAudit(w http.ResponseWriter, r *http.Request) {
+	limit, offset := pagination(r)
+	report, err := s.store.VerifyAuditChain(r.Context(), limit, offset)
+	if err != nil {
+		s.writeInternal(w, r, "verify audit chain", err)
+		return
+	}
+	// Deliberately not an httpx.Page. It is not a collection, and giving it
+	// invented total/limit/offset fields to look like the other list responses
+	// would be a lie about what it is.
+	httpx.WriteJSON(w, r, http.StatusOK, report)
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

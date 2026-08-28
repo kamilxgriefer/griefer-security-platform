@@ -199,7 +199,7 @@ func (s *Service) Ingest(ctx context.Context, raw []byte) (IngestResult, error) 
 				// The emitter ResultPersistenceFailed was declared for and had
 				// not had until now.
 				"result":      audit.ResultPersistenceFailed,
-				"source_type": string(ev.SourceType),
+				"source_type": ev.SourceType,
 				"source_name": ev.SourceName,
 			},
 		})

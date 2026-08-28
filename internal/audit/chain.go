@@ -161,7 +161,7 @@ func decodeJSONValue(raw []byte) (any, error) {
 	dec.UseNumber()
 	var v any
 	if err := dec.Decode(&v); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrDetailsNotCanonical, err)
+		return nil, fmt.Errorf("%w: %w", ErrDetailsNotCanonical, err)
 	}
 	// Trailing content would mean two values where the contract is one, and
 	// hashing only the first would leave the rest outside the chain.

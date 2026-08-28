@@ -105,7 +105,11 @@ func TestAuditChainConformance(t *testing.T) {
 					nil,
 					{},
 					{"big": int64(9007199254740993)},
-					{"float": 1.50, "exp": 1e21, "negzero": -0.0},
+					// Negative zero is NOT written as -0.0: in Go that literal is
+					// plain 0.0. The signed-zero case belongs to the canonical
+					// form and is covered there, over raw JSON, where a producer
+					// can actually send it.
+					{"float": 1.50, "exp": 1e21, "tiny": 1e-300},
 					{"unicode": "zazolc gesla jazn / 105 / ok", "empty": ""},
 					{"nested": map[string]any{"list": []any{1, "2", true, nil}}},
 					{"quarantined_keys": []string{"griefer.control", "griefer.internal"}},

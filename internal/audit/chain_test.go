@@ -250,7 +250,11 @@ func TestSanitiseEntryReplacesRatherThanRefuses(t *testing.T) {
 	}
 	got := map[string]bool{}
 	for _, f := range changed {
-		got[f.(string)] = true
+		name, ok := f.(string)
+		if !ok {
+			t.Fatalf("sanitised_fields holds %T, want string", f)
+		}
+		got[name] = true
 	}
 	if !got["reason"] || !got["subject_id"] {
 		t.Errorf("sanitised_fields = %v, want both reason and subject_id", changed)

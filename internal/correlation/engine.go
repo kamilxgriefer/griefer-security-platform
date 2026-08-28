@@ -297,7 +297,31 @@ func (e *Engine) mergeIntoIncident(ctx context.Context, ev *events.SecurityEvent
 	}
 
 	e.mu.Lock()
-	e.openSubjects[subject] = subjectState{incidentID: inc.ID, lastSeen: ev.Timestamp}
+	// lastSeen never moves backwards.
+	//
+	// It was set straight from ev.Timestamp, which the producer supplies and
+	// which the ingest window bounds only at thirty days — five times the
+	// correlation window. So a subject under investigation could send one event
+	// backdated a few hours for their own identity: the expiry check is
+	// ev.Timestamp.Sub(lastSeen), so a backdated event is not expired and merges
+	// happily, and then rewinds lastSeen behind it. Every genuine event that
+	// followed measured itself against that rewound mark, read as expired, and
+	// opened a NEW incident holding a single finding.
+	//
+	// The result is evidence that never accumulates: no second evidence
+	// category, no risk score above the automation floor, and an analyst looking
+	// at a scatter of one-finding incidents instead of a chain. An attacker
+	// choosing when GRIEFER forgets them is the correlation engine defeated
+	// through its own front door.
+	//
+	// Taking the later of the two keeps a late-arriving event able to join the
+	// incident it belongs to, which is what the window is for, while removing
+	// the producer's ability to turn the clock back.
+	lastSeen := ev.Timestamp
+	if open && state.lastSeen.After(lastSeen) {
+		lastSeen = state.lastSeen
+	}
+	e.openSubjects[subject] = subjectState{incidentID: inc.ID, lastSeen: lastSeen}
 	// Swept on write rather than on a timer: the map only grows here, so this is
 	// the one place that can let it grow, and a background sweeper would be a
 	// goroutine whose absence nobody would notice.

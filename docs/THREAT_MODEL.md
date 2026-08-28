@@ -49,9 +49,19 @@ incident against a colleague, or steer GRIEFER's conclusions.
 - The timestamp window rejects events more than 5 minutes in the future or older
   than 30 days: neither "keep this incident permanently fresh" nor "replay stale
   telemetry into a live incident" works.
+- **A correlation subject's clock never runs backwards.** The window is measured
+  against the latest timestamp seen for that subject, not the latest one
+  submitted, so a producer cannot backdate one event to make GRIEFER treat itself
+  as expired and split its own evidence across fresh incidents. Thirty days of
+  accepted backdating against a six-hour correlation window made that a wide
+  gap; `TestABackdatedEventCannotSplitASubjectsIncident` holds it shut.
 - `received_at` is server-owned and overwrites anything a producer supplies.
 - Automated response requires **two independent evidence categories**, so
-  compromising a single sensor is not enough to drive an action.
+  compromising a single sensor is not enough to drive an action. Note what
+  "independent" means here and does not: independent *category*, never
+  independent *source*. One producer emitting four event types for one identity
+  reaches four categories, so the gate is a bar against a single weak detection
+  and not against a single credential. Closing that is producer authentication.
 - Per-client rate limiting bounds how much a producer can inject.
 
 *Not mitigated*

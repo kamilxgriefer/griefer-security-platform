@@ -363,3 +363,72 @@ func TestEngineSurfacesPersistenceFailures(t *testing.T) {
 		t.Fatal("Process() hid a persistence failure; a silently lost incident is worse than an error")
 	}
 }
+
+// TestABackdatedEventCannotSplitASubjectsIncident.
+//
+// The subject's lastSeen was taken straight from the producer's timestamp, and
+// the ingest window bounds that only at thirty days — five times the six-hour
+// correlation window. So a subject under investigation could send one event
+// backdated a few hours for their own identity: the expiry check is
+// ev.Timestamp.Sub(lastSeen), so a backdated event is not expired and merges,
+// and then rewinds the mark behind it. Every genuine event that followed
+// measured itself against the rewound mark, read as expired, and opened a NEW
+// incident holding a single finding.
+//
+// Evidence then never accumulates: no second category, no risk score above the
+// automation floor, and an analyst reading a scatter of one-finding incidents
+// instead of a chain.
+func TestABackdatedEventCannotSplitASubjectsIncident(t *testing.T) {
+	engine, _, _ := newEngine(t)
+	ctx := context.Background()
+
+	first, err := engine.Process(ctx, signinEvent("evt-1", base))
+	if err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if first == nil {
+		t.Fatal("no incident from the first event")
+	}
+
+	// The evasion: one event for the same identity, timestamped well outside the
+	// correlation window but well inside the ingest window.
+	backdated := signinEvent("evt-backdated", base.Add(-72*time.Hour))
+	if _, err := engine.Process(ctx, backdated); err != nil {
+		t.Fatalf("Process(backdated) error = %v", err)
+	}
+
+	// The next genuine event must still belong to the same incident.
+	third, err := engine.Process(ctx, signinEvent("evt-2", base.Add(time.Minute)))
+	if err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if third == nil {
+		t.Fatal("no incident from the third event")
+	}
+	if third.ID != first.ID {
+		t.Fatalf("the genuine event opened incident %s instead of joining %s.\n"+
+			"A producer that can rewind its own subject's clock decides when GRIEFER "+
+			"forgets it, and evidence stops accumulating.", third.ID, first.ID)
+	}
+}
+
+// TestAGenuinelyStaleSubjectStillExpires. The fix must not turn the correlation
+// window into "forever": a subject whose real last activity is outside the
+// window still starts a new incident.
+func TestAGenuinelyStaleSubjectStillExpires(t *testing.T) {
+	engine, _, _ := newEngine(t)
+	ctx := context.Background()
+
+	first, err := engine.Process(ctx, signinEvent("evt-1", base))
+	if err != nil || first == nil {
+		t.Fatalf("Process() error = %v, incident = %v", err, first)
+	}
+	later, err := engine.Process(ctx, signinEvent("evt-2", base.Add(correlation.DefaultWindow+time.Hour)))
+	if err != nil || later == nil {
+		t.Fatalf("Process() error = %v, incident = %v", err, later)
+	}
+	if later.ID == first.ID {
+		t.Error("an event outside the correlation window joined the previous incident; " +
+			"the window no longer closes")
+	}
+}

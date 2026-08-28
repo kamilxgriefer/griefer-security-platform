@@ -237,7 +237,7 @@ func (c Config) Validate() ([]Warning, error) {
 	if !c.Postgres.Enabled {
 		warnings = append(warnings, Warning{
 			Setting: "GRIEFER_STORAGE_POSTGRES",
-			Message: "running on the in-memory store; all events, incidents and audit entries are lost on restart",
+			Message: "running on the in-memory store; all events, incidents and audit entries are lost on restart, and the audit chain there is recomputed by the process that wrote it — there is no trigger and nothing durable behind it",
 		})
 	}
 

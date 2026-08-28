@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -320,13 +321,21 @@ type querier interface {
 // system's latency.
 func (s *PostgresStore) SaveActionWithAudit(ctx context.Context, action *incidents.ResponseAction, entries []*audit.Entry) error {
 	return s.inTx(ctx, func(tx querier) error {
+		// The chain lock is taken before saveAction so that every transaction
+		// touching audit takes it first. Action ids are unique per request and
+		// same-row contention is vanishingly unlikely — which is exactly the
+		// "it would never happen in practice" that does not count as a bound.
+		head, err := lockAuditChainHead(ctx, tx)
+		if err != nil {
+			return err
+		}
 		if action != nil {
 			if err := saveAction(ctx, tx, action); err != nil {
 				return err
 			}
 		}
 		for _, entry := range entries {
-			if err := appendAudit(ctx, tx, entry); err != nil {
+			if err := appendAudit(ctx, tx, &head, entry); err != nil {
 				return err
 			}
 		}
@@ -449,36 +458,133 @@ func (s *PostgresStore) ListActions(ctx context.Context, incidentID string, limi
 
 // Append implements audit.Sink. The database assigns the sequence, so ordering
 // is decided by PostgreSQL rather than by whichever replica happened to write.
-func (s *PostgresStore) Append(ctx context.Context, entry *audit.Entry) error {
-	return appendAudit(ctx, s.pool, entry)
+// chainHead is the chain state one audit-writing transaction carries between
+// the entries it writes.
+type chainHead struct {
+	chainID  string
+	prevHash string // "" when the chain has no entries yet, i.e. the genesis prev_hash
+	sequence int64
 }
 
-// appendAudit writes one audit entry through q, which may be the pool or a
-// transaction.
-func appendAudit(ctx context.Context, q querier, entry *audit.Entry) error {
+// lockAuditChainHead takes the chain lock and returns the hash the next entry
+// must link to.
+//
+// The lock is taken BEFORE the head is read and is held to commit. Releasing it
+// after the read would let two writers each hold a valid predecessor and insert
+// in either order, at which point nextval order and chain order diverge — and
+// ORDER BY sequence ASC, which is what verify walks, would stop being chain
+// order.
+//
+// Every transaction that writes audit takes this first, before any other row
+// lock, so audit writers are totally ordered against each other and ordered
+// against response_actions in one direction only. There is no cycle to
+// deadlock on.
+func lockAuditChainHead(ctx context.Context, q querier) (chainHead, error) {
+	var h chainHead
+	err := q.QueryRow(ctx, `
+		SELECT chain_id, head_sequence
+		FROM audit_chain_head WHERE only_row FOR UPDATE`,
+	).Scan(&h.chainID, &h.sequence)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return h, fmt.Errorf("storage: audit_chain_head has no row, so audit writes cannot be serialised; " +
+			"run the schema migration against this database")
+	case err != nil:
+		return h, fmt.Errorf("storage: lock audit chain head: %w", err)
+	}
+
+	// The predecessor comes from the TRAIL, not from head_hash.
+	//
+	// This is the difference between a tripwire and a kill switch. head_hash
+	// sits in the one table in this subsystem with no append-only trigger, and
+	// the service's own role must be able to update it. Deriving prev_hash from
+	// it would mean that a single UPDATE putting any already-claimed hash there
+	// makes every subsequent INSERT collide with uq_audit_log_chain_prev — and
+	// since recordAudit logs a failed audit write and carries on, the whole
+	// trail would go silent with nothing anywhere saying so. One statement, and
+	// GRIEFER stops recording.
+	//
+	// Read from audit_log instead and head_hash cannot stop anything. A wrong
+	// value there is then exactly what it should be: a discrepancy verify
+	// reports, in a row the chain does not depend on.
+	var tail *string
+	err = q.QueryRow(ctx, `
+		SELECT entry_hash FROM audit_log
+		 WHERE chain_id = $1 AND entry_hash IS NOT NULL
+		 ORDER BY sequence DESC LIMIT 1`, h.chainID).Scan(&tail)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		h.prevHash = audit.GenesisPrevHash
+	case err != nil:
+		return h, fmt.Errorf("storage: read audit chain tail: %w", err)
+	default:
+		if tail != nil {
+			h.prevHash = *tail
+		}
+	}
+	return h, nil
+}
+
+// Append implements audit.Sink.
+//
+// This is a transaction where it used to be one autocommit INSERT on the pool,
+// because a chain link cannot be computed from a head another writer may
+// already have moved. The cost is real and is recorded in ADR 0007: every audit
+// write against this database now serialises on one row lock.
+func (s *PostgresStore) Append(ctx context.Context, entry *audit.Entry) error {
+	return s.inTx(ctx, func(tx querier) error {
+		head, err := lockAuditChainHead(ctx, tx)
+		if err != nil {
+			return err
+		}
+		return appendAudit(ctx, tx, &head, entry)
+	})
+}
+
+// appendAudit writes one audit entry through q, which must be a transaction
+// holding the chain-head lock, and advances head to the entry it wrote.
+func appendAudit(ctx context.Context, q querier, head *chainHead, entry *audit.Entry) error {
+	// First, and unchanged: the conformance suite and the atomicity suite both
+	// depend on a missing id being refused before anything else is examined.
 	if entry == nil || entry.ID == "" {
 		return fmt.Errorf("storage: audit entry requires an id")
 	}
-	var details []byte
-	if entry.Details != nil {
-		var err error
-		details, err = json.Marshal(entry.Details)
-		if err != nil {
-			return fmt.Errorf("storage: encode audit details: %w", err)
-		}
+	// Sanitise before hashing, so that what is hashed is what is stored.
+	audit.SanitiseEntry(entry)
+	details, _, canonical, err := audit.CanonicalDetails(entry.Details)
+	if err != nil {
+		return fmt.Errorf("storage: canonicalise audit details: %w", err)
 	}
+	// Belt and braces for an entry built by hand rather than by Prepare, which
+	// is every entry the store-level tests write.
+	entry.Timestamp = entry.Timestamp.UTC().Truncate(time.Microsecond)
+	entry.ChainID, entry.PrevHash = head.chainID, head.prevHash
+	entry.EntryHash = audit.ChainHash(head.chainID, head.prevHash, entry, canonical)
+
 	const stmt = `
 		INSERT INTO audit_log (
-			id, occurred_at, actor, actor_role, action, subject_type, subject_id, outcome, reason, request_id, details
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+			id, occurred_at, actor, actor_role, action, subject_type, subject_id, outcome, reason, request_id, details,
+			chain_id, prev_hash, entry_hash, hash_version
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		RETURNING sequence`
-	err := q.QueryRow(ctx, stmt,
+	err = q.QueryRow(ctx, stmt,
 		entry.ID, entry.Timestamp, entry.Actor, nullable(entry.ActorRole), entry.Action, entry.SubjectType,
 		entry.SubjectID, entry.Outcome, entry.Reason, nullable(entry.RequestID), details,
+		entry.ChainID, entry.PrevHash, entry.EntryHash, audit.ChainHashVersion,
 	).Scan(&entry.Sequence)
 	if err != nil {
 		return fmt.Errorf("storage: append audit entry: %w", err)
 	}
+
+	// Per entry rather than once at the end of the transaction. Once at the end
+	// is one fewer round trip and one forgotten call away from a stale head,
+	// and a stale head is a fork rather than a slow query.
+	if _, err := q.Exec(ctx, `
+		UPDATE audit_chain_head SET head_sequence = $1, head_hash = $2, updated_at = now()
+		WHERE only_row`, entry.Sequence, entry.EntryHash); err != nil {
+		return fmt.Errorf("storage: advance audit chain head: %w", err)
+	}
+	head.prevHash, head.sequence = entry.EntryHash, entry.Sequence
 	return nil
 }
 
@@ -494,7 +600,8 @@ func (s *PostgresStore) List(ctx context.Context, limit, offset int) ([]*audit.E
 	}
 	const q = `
 		SELECT sequence, id, occurred_at, actor, COALESCE(actor_role, ''), action,
-		       subject_type, subject_id, outcome, reason, COALESCE(request_id, ''), details
+		       subject_type, subject_id, outcome, reason, COALESCE(request_id, ''), details,
+		       COALESCE(chain_id, ''), COALESCE(prev_hash, ''), COALESCE(entry_hash, '')
 		FROM audit_log ORDER BY sequence ASC LIMIT $1 OFFSET $2`
 	rows, err := s.pool.Query(ctx, q, limit, offset)
 	if err != nil {
@@ -510,11 +617,18 @@ func (s *PostgresStore) List(ctx context.Context, limit, offset int) ([]*audit.E
 		)
 		if err := rows.Scan(&entry.Sequence, &entry.ID, &entry.Timestamp, &entry.Actor,
 			&entry.ActorRole, &entry.Action, &entry.SubjectType, &entry.SubjectID,
-			&entry.Outcome, &entry.Reason, &entry.RequestID, &details); err != nil {
+			&entry.Outcome, &entry.Reason, &entry.RequestID, &details,
+			&entry.ChainID, &entry.PrevHash, &entry.EntryHash); err != nil {
 			return nil, 0, fmt.Errorf("storage: scan audit entry: %w", err)
 		}
 		if len(details) > 0 {
-			if err := json.Unmarshal(details, &entry.Details); err != nil {
+			// UseNumber, not a plain Unmarshal. Without it a JSON integer past
+			// 2^53 decodes to the nearest float64, so the trail would report a
+			// number its producer did not write — and the memory store, which
+			// keeps the caller's value, would disagree with this one.
+			dec := json.NewDecoder(bytes.NewReader(details))
+			dec.UseNumber()
+			if err := dec.Decode(&entry.Details); err != nil {
 				return nil, 0, fmt.Errorf("storage: decode audit details: %w", err)
 			}
 		}

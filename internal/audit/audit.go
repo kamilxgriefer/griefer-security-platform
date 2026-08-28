@@ -1,12 +1,17 @@
 // Package audit records why GRIEFER did what it did.
 //
-// The audit trail is append-only at the application level in v0.1: the Sink
-// interface exposes Append and List and nothing else, and no code path in the
-// platform can update or delete an entry. That is a design constraint, not a
-// cryptographic guarantee — anyone with database access can still rewrite
-// history. Making the trail tamper-EVIDENT (hash chaining each entry to its
-// predecessor and periodically anchoring the chain) is milestone M4; the plan
-// is written up in docs/SAFETY_MODEL.md.
+// The audit trail is append-only at the application level: the Sink interface
+// exposes Append and List and nothing else, and no code path in the platform
+// can update or delete an entry.
+//
+// Entries are also hash-chained — each one carries its predecessor's hash, and
+// GET /api/v1/audit/verify recomputes the links. That detects alteration; it
+// does not prove authenticity, because the chain is stored in the same database
+// as the entries and no secret enters the computation, so a role that can
+// rewrite the table can recompute the chain with it. Anchoring the chain head
+// to storage under a different authority is what would close that, and it has
+// not shipped. See chain.go, docs/SAFETY_MODEL.md and
+// docs/adr/0007-hash-chained-audit-without-anchor.md.
 package audit
 
 import (
@@ -96,6 +101,19 @@ type Entry struct {
 	Reason      string         `json:"reason"`
 	RequestID   string         `json:"request_id,omitempty"`
 	Details     map[string]any `json:"details,omitempty"`
+
+	// ChainID, PrevHash and EntryHash are store state, not caller input.
+	//
+	// Prepare zeroes all three and the store stamps them back onto the caller's
+	// entry, the same way Sequence already is. A caller does not get to name
+	// its own predecessor: if it could, an entry could be spliced into the
+	// chain at a position of the writer's choosing.
+	//
+	// All three are empty on an entry written before the chain existed, which
+	// reads as OUTSIDE the chain — not as verified, and not as broken.
+	ChainID   string `json:"chain_id,omitempty"`
+	PrevHash  string `json:"prev_hash,omitempty"`
+	EntryHash string `json:"entry_hash,omitempty"`
 }
 
 // Sink is the append-only persistence surface for audit entries.
@@ -149,10 +167,21 @@ func (r *Recorder) Prepare(entry Entry) (*Entry, error) {
 		return nil, fmt.Errorf("audit: outcome is required")
 	}
 	entry.ID = idgen.New(idgen.PrefixAudit)
-	entry.Timestamp = r.now().UTC()
+	// Truncated at the point of stamping rather than left to each store.
+	// TIMESTAMPTZ holds microseconds and time.Time holds nanoseconds, so
+	// without this the memory store keeps a precision PostgreSQL discards and
+	// the two stores return different timestamps for the same entry — a
+	// divergence the conformance suite exists to prevent, and one the chain
+	// would turn into a hash that only agrees with itself on one store.
+	entry.Timestamp = r.now().UTC().Truncate(time.Microsecond)
 	if entry.Actor == "" {
 		entry.Actor = "system:griefer"
 	}
+	// The chain is store state. Whatever a caller put here is not a claim it is
+	// entitled to make.
+	entry.ChainID, entry.PrevHash, entry.EntryHash = "", "", ""
+	SanitiseEntry(&entry)
+	entry.Details = boundDetails(entry.Details)
 	return &entry, nil
 }
 

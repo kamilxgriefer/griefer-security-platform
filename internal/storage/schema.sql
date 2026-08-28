@@ -64,9 +64,10 @@ CREATE INDEX IF NOT EXISTS idx_response_actions_incident ON response_actions (in
 -- defence in depth against a future code path — or a careless psql session —
 -- that tries anyway.
 --
--- This is tamper-RESISTANT, not tamper-EVIDENT. A role with DDL rights can drop
--- the trigger. Hash-chaining entries so that removal is detectable is milestone
--- M4; see docs/SAFETY_MODEL.md.
+-- The trigger is tamper-RESISTANT: a role with DDL rights can drop it. The
+-- chain columns below are what make an alteration DETECTABLE after the fact --
+-- though not attributable, since the chain lives in this same database and no
+-- secret enters it. See docs/adr/0007-hash-chained-audit-without-anchor.md.
 CREATE TABLE IF NOT EXISTS audit_log (
     sequence     BIGSERIAL PRIMARY KEY,
     id           TEXT        NOT NULL UNIQUE,
@@ -118,3 +119,95 @@ BEGIN
     END IF;
 END;
 $$;
+
+-- prev_hash and entry_hash chain each entry to its predecessor.
+--
+-- Additive ALTERs rather than columns in the CREATE above, for the reason
+-- actor_role gives: a deployed database must gain them without being rebuilt.
+--
+-- Rows written before this migration keep NULL in all four, and that is where
+-- they stay. Filling them in means an UPDATE, which the trigger below refuses,
+-- so a backfill would have to drop the guarantee it claims to strengthen. It
+-- would also prove nothing: hashes computed today over rows written last year
+-- attest only that those rows hash to what they say today, and anyone with the
+-- rights to run the backfill had the rights to alter the rows first. NULL reads
+-- as "outside the chain" -- not as "verified", and not as "broken".
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS chain_id   TEXT;
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS prev_hash  TEXT;
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS entry_hash TEXT;
+
+-- hash_version records which canonical form produced entry_hash. A verifier
+-- that meets a version it does not implement reports that row unverifiable,
+-- never broken: "this binary is older than that row" and "someone edited that
+-- row" must not look the same to whoever was woken up.
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS hash_version SMALLINT;
+
+-- Half a link reads as a break at verify time for a row nobody touched. This
+-- catches a future code path that writes some of the four and not the rest; it
+-- does nothing about an attacker, who can write all four.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'audit_log_chain_link_is_whole'
+          AND conrelid = 'audit_log'::regclass
+    ) THEN
+        ALTER TABLE audit_log ADD CONSTRAINT audit_log_chain_link_is_whole
+            CHECK (num_nulls(chain_id, prev_hash, entry_hash, hash_version) IN (0, 4));
+    END IF;
+END;
+$$;
+
+-- There is deliberately NO uniqueness constraint on (chain_id, prev_hash).
+--
+-- One was tried. It refuses the SECOND row to claim a predecessor -- and by
+-- construction that second row is GRIEFER's, because whoever bypasses the head
+-- lock inserts first. Anyone holding INSERT could therefore claim the current
+-- tail's hash with one statement, at any sequence number they liked, and every
+-- audit write after it would be refused. recordAudit logs a failed write and
+-- carries on, so the trail would simply go quiet.
+--
+-- Refusing to record is the failure this subsystem exists to prevent, and a
+-- constraint that turns one INSERT into permanent silence is worth less than
+-- what it was buying. What it was buying is already covered: a row inserted
+-- mid-chain leaves the row after it linking to a predecessor that is no longer
+-- its neighbour, which the linkage walk reports as link_mismatch.
+DROP INDEX IF EXISTS uq_audit_log_chain_prev;
+
+-- Every append reads the chain's newest entry to find its predecessor, because
+-- deriving that from audit_chain_head would let one UPDATE of a trigger-free
+-- row stop the trail. Without this index that read walks back over the primary
+-- key from the end of the table.
+CREATE INDEX IF NOT EXISTS idx_audit_log_chain_tail
+    ON audit_log (chain_id, sequence DESC) WHERE entry_hash IS NOT NULL;
+
+-- audit_chain_head is a pointer, not a record, which is why it carries no
+-- append-only trigger and is the one table in this subsystem that is updated.
+--
+-- It does two jobs. The FOR UPDATE lock on its single row is what stops two
+-- concurrent appends reading the same head and both claiming it; unlike a lock
+-- on the newest audit_log row it exists when the trail is empty, which is
+-- exactly when the genesis race would otherwise happen. And a head that is
+-- ahead of the trail is the only thing inside this database that distinguishes
+-- a truncated or partially restored trail from an intact one, because a trail
+-- with its tail removed is a shorter chain whose every link still checks out.
+--
+-- Someone who can rewrite this row can hide that signal. They can also rewrite
+-- audit_log, so this removes a tripwire rather than opening a door -- but it is
+-- a tripwire against accident and partial restore, not against an adversary,
+-- and it must not be described as more.
+CREATE TABLE IF NOT EXISTS audit_chain_head (
+    only_row      BOOLEAN     PRIMARY KEY DEFAULT TRUE CHECK (only_row),
+    chain_id      TEXT        NOT NULL,
+    head_sequence BIGINT      NOT NULL DEFAULT 0,
+    head_hash     TEXT,
+    started_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- chain_id is minted once per database and never changes. Two databases that
+-- disagree about it hold two different trails however alike their contents
+-- look, which is what makes a restore into the wrong DSN visible.
+INSERT INTO audit_chain_head (only_row, chain_id)
+VALUES (TRUE, 'chn-' || gen_random_uuid()::text)
+ON CONFLICT (only_row) DO NOTHING;

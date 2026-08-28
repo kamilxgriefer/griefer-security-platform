@@ -21,6 +21,7 @@ const (
 	PrefixAction   = "act"
 	PrefixAudit    = "aud"
 	PrefixRequest  = "req"
+	PrefixChain    = "chn"
 )
 
 // New returns a time-ordered identifier with the given type prefix, for example

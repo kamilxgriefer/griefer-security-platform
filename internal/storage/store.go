@@ -90,6 +90,20 @@ type Store interface {
 	// the shape of an evaluation rejected before any action exists.
 	SaveActionWithAudit(ctx context.Context, action *incidents.ResponseAction, entries []*audit.Entry) error
 
+	// VerifyAuditChain recomputes the trail's links over the whole chain and
+	// its content over a bounded window.
+	//
+	// The two checks are separated because they cost different things. Linkage
+	// is one ordered scan comparing stored hashes to stored hashes; content has
+	// to decode Details and recompute a hash per row. Collapsing them would
+	// make the cheap check as expensive as the dear one, and the cheap one is
+	// the one that catches deletion.
+	//
+	// On the interface for the reason SaveActionWithAudit gives above: an
+	// integrity check a caller silently loses depending on which store was
+	// configured is not a check worth stating.
+	VerifyAuditChain(ctx context.Context, limit, offset int) (*AuditChainReport, error)
+
 	// Ping reports whether the backing store is reachable.
 	Ping(ctx context.Context) error
 	// Close releases held resources.

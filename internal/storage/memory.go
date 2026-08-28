@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/kamilxgriefer/griefer-security-platform/internal/audit"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/events"
+	"github.com/kamilxgriefer/griefer-security-platform/internal/idgen"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/incidents"
 )
 
@@ -33,6 +35,15 @@ type MemoryStore struct {
 	auditLog      []*audit.Entry
 	auditSeq      int64
 
+	// chainID, auditHead and auditHeadSeq are this store's audit chain.
+	//
+	// Instance state, not package state: the conformance factory builds a fresh
+	// store per sub-case, and a package-level head would leak a predecessor
+	// from one case into the next.
+	chainID      string
+	auditHead    string
+	auditHeadSeq int64
+
 	// maxEvents bounds retention. An in-memory store with unbounded growth is
 	// an availability bug waiting for a busy day.
 	maxEvents int
@@ -49,6 +60,11 @@ func NewMemoryStore(maxEvents int) *MemoryStore {
 		incidents: make(map[string]*incidents.Incident),
 		actions:   make(map[string]*incidents.ResponseAction),
 		maxEvents: maxEvents,
+		// Minted per store. Two memory stores hold two different trails, which
+		// is what stops a verification result from one being read as evidence
+		// about the other.
+		chainID:   idgen.New(idgen.PrefixChain),
+		auditHead: audit.GenesisPrevHash,
 	}
 }
 
@@ -226,18 +242,21 @@ func (s *MemoryStore) SaveActionWithAudit(_ context.Context, action *incidents.R
 	if action != nil && action.ID == "" {
 		return fmt.Errorf("storage: response action requires an id")
 	}
+	prepared := make([]preparedAudit, 0, len(entries))
 	for _, entry := range entries {
-		if entry == nil || entry.ID == "" {
-			return fmt.Errorf("storage: audit entry requires an id")
+		p, err := prepareAudit(entry)
+		if err != nil {
+			return err
 		}
+		prepared = append(prepared, p)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if action != nil {
 		s.saveActionLocked(action)
 	}
-	for _, entry := range entries {
-		s.appendAuditLocked(entry)
+	for _, p := range prepared {
+		s.appendAuditLocked(p)
 	}
 	return nil
 }
@@ -291,22 +310,64 @@ func (s *MemoryStore) ListActions(_ context.Context, incidentID string, limit, o
 // Append implements audit.Sink. Entries are only ever appended; there is no
 // code path in this type that mutates or removes one.
 func (s *MemoryStore) Append(_ context.Context, entry *audit.Entry) error {
-	if entry == nil || entry.ID == "" {
-		return fmt.Errorf("storage: audit entry requires an id")
+	prepared, err := prepareAudit(entry)
+	if err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.appendAuditLocked(entry)
+	s.appendAuditLocked(prepared)
 	return nil
 }
 
-// appendAuditLocked assumes the caller holds the write lock.
-func (s *MemoryStore) appendAuditLocked(entry *audit.Entry) {
+// preparedAudit is the per-entry work that can fail.
+//
+// It is done before the lock so that everything under the lock is infallible,
+// which is what makes this store's validate-first atomicity genuinely
+// equivalent to a transaction rather than merely similar to one.
+type preparedAudit struct {
+	entry     *audit.Entry
+	tree      map[string]any
+	canonical []byte
+}
+
+func prepareAudit(entry *audit.Entry) (preparedAudit, error) {
+	if entry == nil || entry.ID == "" {
+		return preparedAudit{}, fmt.Errorf("storage: audit entry requires an id")
+	}
+	// The same replacement PostgreSQL forces, applied here too, so the memory
+	// store cannot be the more forgiving fake.
+	audit.SanitiseEntry(entry)
+	_, tree, canonical, err := audit.CanonicalDetails(entry.Details)
+	if err != nil {
+		return preparedAudit{}, fmt.Errorf("storage: canonicalise audit details: %w", err)
+	}
+	return preparedAudit{entry: entry, tree: tree, canonical: canonical}, nil
+}
+
+// appendAuditLocked assumes the caller holds the write lock. It cannot fail.
+//
+// The mutex buys here exactly what the head-row lock buys in PostgreSQL: no
+// second writer can read this head and claim it too. That is why one
+// conformance test can assert one chain invariant against both stores.
+func (s *MemoryStore) appendAuditLocked(p preparedAudit) {
+	entry := p.entry
+	entry.Timestamp = entry.Timestamp.UTC().Truncate(time.Microsecond)
+	entry.ChainID, entry.PrevHash = s.chainID, s.auditHead
+	entry.EntryHash = audit.ChainHash(s.chainID, s.auditHead, entry, p.canonical)
+
 	s.auditSeq++
-	clone := deepCopyAuditEntry(entry)
-	clone.Sequence = s.auditSeq
 	entry.Sequence = s.auditSeq
+
+	clone := deepCopyAuditEntry(entry)
+	// The freshly decoded tree, not the caller's map. Two live call sites hand
+	// this store slices they still own, and under a chain a later mutation of
+	// one would silently invalidate a committed entry's hash — the memory
+	// store's own version of a false tamper report.
+	clone.Details = p.tree
 	s.auditLog = append(s.auditLog, clone)
+
+	s.auditHead, s.auditHeadSeq = entry.EntryHash, entry.Sequence
 }
 
 // deepCopyAuditEntry severs every reference the caller could still hold.
@@ -319,19 +380,43 @@ func (s *MemoryStore) appendAuditLocked(entry *audit.Entry) {
 // because it marshals Details to JSON at write time; the memory store has to
 // copy deliberately.
 //
-// Values inside Details are not themselves cloned. They are identifiers,
-// verdicts and counts by contract (see internal/audit), and a deep clone of
-// arbitrary any-typed values would need reflection for a case this package
-// does not accept in the first place.
+// The copy is recursive. Details is in the closed JSON value domain by the time
+// it is stored — appendAuditLocked replaces it with the tree the canonicaliser
+// decoded — so no reflection is needed to sever every nested map and slice. A
+// shallow copy was enough before the chain: it is not now, because a caller
+// mutating a nested slice it still holds would leave a committed entry whose
+// hash no longer matches its content, which reads as tampering.
 func deepCopyAuditEntry(in *audit.Entry) *audit.Entry {
 	out := *in
 	if in.Details != nil {
-		out.Details = make(map[string]any, len(in.Details))
-		for k, v := range in.Details {
-			out.Details[k] = v
-		}
+		copied, _ := deepCopyJSONValue(in.Details).(map[string]any)
+		out.Details = copied
 	}
 	return &out
+}
+
+// deepCopyJSONValue copies a value in the domain decodeJSONValue produces:
+// map[string]any, []any, and scalars that are already immutable.
+func deepCopyJSONValue(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, e := range t {
+			out[k] = deepCopyJSONValue(e)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = deepCopyJSONValue(e)
+		}
+		return out
+	default:
+		// json.Number, string, bool, nil — all immutable. Anything else got
+		// here without passing through the canonicaliser, and copying it by
+		// value is the same thing the previous shallow copy did.
+		return v
+	}
 }
 
 // List implements audit.Sink, returning entries oldest first so the sequence

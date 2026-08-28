@@ -23,5 +23,15 @@ func truncateAll(ctx context.Context, dsn string) error {
 		`TRUNCATE security_events, incidents, response_actions, audit_log RESTART IDENTITY`); err != nil {
 		return fmt.Errorf("truncate: %w", err)
 	}
+	// audit_chain_head is reset, NOT truncated. Truncating would drop the seed
+	// row that every audit write locks, and the next append would fail rather
+	// than start a fresh chain. Resetting it to the genesis state is what makes
+	// each test's chain independent of the last one's — without it the first
+	// entry of a run links to a predecessor that TRUNCATE has just deleted,
+	// which is indistinguishable from a deleted prefix.
+	if _, err := conn.Exec(ctx,
+		`UPDATE audit_chain_head SET head_sequence = 0, head_hash = NULL, updated_at = now()`); err != nil {
+		return fmt.Errorf("reset audit chain head: %w", err)
+	}
 	return nil
 }

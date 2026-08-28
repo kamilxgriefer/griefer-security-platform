@@ -129,6 +129,9 @@ type IngestResult struct {
 	// Degraded names subsystems that failed while handling this event. The
 	// event was still accepted and persisted.
 	Degraded []string `json:"degraded,omitempty"`
+	// Duplicate marks an event already ingested under this id. Nothing was
+	// stored, correlated, projected or published a second time.
+	Duplicate bool `json:"duplicate,omitempty"`
 }
 
 // Ingest validates, normalizes, stores and correlates a single raw event.
@@ -165,7 +168,8 @@ func (s *Service) Ingest(ctx context.Context, raw []byte) (IngestResult, error) 
 
 	result := IngestResult{EventID: ev.ID, Quarantined: ev.Quarantined}
 
-	if err := s.store.SaveEvent(ctx, ev); err != nil {
+	stored, err := s.store.SaveEvent(ctx, ev)
+	if err != nil {
 		s.metrics.EventsRejected.WithLabelValues("storage").Inc()
 		s.logger.ErrorContext(ctx, "failed to persist event",
 			slog.String("request_id", requestID), slog.String("event_id", ev.ID),
@@ -194,6 +198,23 @@ func (s *Service) Ingest(ctx context.Context, raw []byte) (IngestResult, error) 
 			},
 		})
 		return IngestResult{}, fmt.Errorf("persist event: %w", err)
+	}
+	if !stored {
+		// Already ingested under this id. Ingestion is documented as idempotent
+		// on event id, and it was — in the database. Everything after this line
+		// ran again anyway: the graph took the projection a second time, the bus
+		// republished, and correlation counted another hit, so re-POSTing one
+		// event id drove a threshold rule to fire on evidence security_events
+		// holds exactly one row of. The incident then said "repeated" about a
+		// thing that happened once.
+		//
+		// No audit entry: the entry describing this event already exists, a
+		// second would be a claim that it arrived twice as evidence rather than
+		// as a retry, and a replay would flood an append-only trail. The counter
+		// is where a retry storm becomes visible.
+		s.metrics.EventsRejected.WithLabelValues("duplicate").Inc()
+		result.Duplicate = true
+		return result, nil
 	}
 	s.metrics.EventsIngested.WithLabelValues(string(ev.Category)).Inc()
 

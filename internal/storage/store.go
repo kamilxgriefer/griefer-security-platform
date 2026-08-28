@@ -66,7 +66,15 @@ func ClampLimit(limit int) int {
 type Store interface {
 	audit.Sink
 
-	SaveEvent(ctx context.Context, ev *events.SecurityEvent) error
+	// SaveEvent persists an event and reports whether it was NEW.
+	//
+	// The bool is the whole reason this does not just return an error.
+	// Ingestion is idempotent on event id, and both stores implemented that by
+	// discarding a repeat and returning nil — so the caller could not tell a
+	// stored event from a discarded one and carried on correlating either way.
+	// Re-POSTing one event id therefore fired threshold rules on evidence the
+	// database does not hold.
+	SaveEvent(ctx context.Context, ev *events.SecurityEvent) (stored bool, err error)
 	ListEvents(ctx context.Context, limit, offset int) ([]*events.SecurityEvent, int, error)
 	CountEvents(ctx context.Context) (int, error)
 

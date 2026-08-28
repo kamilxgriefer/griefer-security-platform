@@ -78,15 +78,16 @@ func (s *MemoryStore) Ping(context.Context) error { return nil }
 func (s *MemoryStore) Close() error { return nil }
 
 // SaveEvent implements Store.
-func (s *MemoryStore) SaveEvent(_ context.Context, ev *events.SecurityEvent) error {
+func (s *MemoryStore) SaveEvent(_ context.Context, ev *events.SecurityEvent) (bool, error) {
 	if ev == nil || ev.ID == "" {
-		return fmt.Errorf("storage: event requires an id")
+		return false, fmt.Errorf("storage: event requires an id")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.eventIDs[ev.ID]; exists {
-		// Producers retry. A retry storm must not become a duplicate storm.
-		return nil
+		// Producers retry. A retry storm must not become a duplicate storm —
+		// and false tells the caller not to process it a second time either.
+		return false, nil
 	}
 	clone := *ev
 	s.events = append(s.events, &clone)
@@ -98,7 +99,7 @@ func (s *MemoryStore) SaveEvent(_ context.Context, ev *events.SecurityEvent) err
 		}
 		s.events = s.events[len(s.events)-s.maxEvents:]
 	}
-	return nil
+	return true, nil
 }
 
 // ListEvents implements Store, returning newest first.

@@ -533,3 +533,80 @@ func (deadKernel) Close() error                 { return nil }
 
 var _ = events.SeverityLow
 var _ = graph.TypeIdentity
+
+// TestAReplayedEventIdIsNotCorrelatedTwice.
+//
+// Ingestion is documented as idempotent on event id, and it was — in the
+// database. Both stores discarded a repeat and returned nil, so the caller
+// could not tell a stored event from a discarded one and ran everything after
+// the write anyway: the graph took the projection again, the bus republished,
+// and correlation counted another hit.
+//
+// So re-POSTing one event id drove threshold rules on evidence security_events
+// holds exactly one row of. The incident said "repeated" about a thing that
+// happened once, and an attacker manufactured corroboration out of a single
+// event they were entitled to send.
+func TestAReplayedEventIdIsNotCorrelatedTwice(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+
+	event := `{"id":"evt-replay-1","schema_version":"0.1","timestamp":"2026-08-23T09:00:00Z",` +
+		`"source_type":"identity_provider","source_name":"test","event_type":"user_signin",` +
+		`"category":"authentication","severity":"medium",` +
+		`"actor":{"type":"identity","id":"u-replay"},` +
+		`"network":{"source_ip":"203.0.113.9","first_seen_for_actor":true}}`
+
+	first := h.do(http.MethodPost, "/api/v1/events", event)
+	if first.StatusCode != http.StatusAccepted {
+		t.Fatalf("first ingest status = %d, want 202: %s", first.StatusCode, h.body(first))
+	}
+	var firstBody struct {
+		Duplicate bool `json:"duplicate"`
+	}
+	h.decode(first, &firstBody)
+	if firstBody.Duplicate {
+		t.Fatal("the first submission was reported as a duplicate")
+	}
+
+	countEvents := func() int {
+		t.Helper()
+		resp := h.do(http.MethodGet, "/api/v1/events?limit=200", "")
+		var page struct {
+			Total int `json:"total"`
+		}
+		h.decode(resp, &page)
+		return page.Total
+	}
+	countIncidents := func() int {
+		t.Helper()
+		resp := h.do(http.MethodGet, "/api/v1/incidents?limit=200", "")
+		var page struct {
+			Total int `json:"total"`
+		}
+		h.decode(resp, &page)
+		return page.Total
+	}
+	eventsAfterFirst, incidentsAfterFirst := countEvents(), countIncidents()
+
+	// The replay: byte-for-byte the same submission, nine more times.
+	for i := 0; i < 9; i += 1 {
+		resp := h.do(http.MethodPost, "/api/v1/events", event)
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("replay %d status = %d, want 202: %s", i, resp.StatusCode, h.body(resp))
+		}
+		var body struct {
+			Duplicate bool `json:"duplicate"`
+		}
+		h.decode(resp, &body)
+		if !body.Duplicate {
+			t.Errorf("replay %d was not reported as a duplicate; the caller cannot tell", i)
+		}
+	}
+
+	if got := countEvents(); got != eventsAfterFirst {
+		t.Errorf("stored events = %d after nine replays, want %d", got, eventsAfterFirst)
+	}
+	if got := countIncidents(); got != incidentsAfterFirst {
+		t.Errorf("incidents = %d after nine replays, want %d: correlation ran on evidence "+
+			"the store discarded", got, incidentsAfterFirst)
+	}
+}

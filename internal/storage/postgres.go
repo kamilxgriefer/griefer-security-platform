@@ -113,13 +113,13 @@ func (s *PostgresStore) Close() error {
 // SaveEvent implements Store. Re-ingesting an event with a known id is
 // idempotent rather than an error: producers retry, and a retry storm must not
 // turn into an error storm.
-func (s *PostgresStore) SaveEvent(ctx context.Context, ev *events.SecurityEvent) error {
+func (s *PostgresStore) SaveEvent(ctx context.Context, ev *events.SecurityEvent) (bool, error) {
 	if ev == nil || ev.ID == "" {
-		return fmt.Errorf("storage: event requires an id")
+		return false, fmt.Errorf("storage: event requires an id")
 	}
 	doc, err := json.Marshal(ev)
 	if err != nil {
-		return fmt.Errorf("storage: encode event: %w", err)
+		return false, fmt.Errorf("storage: encode event: %w", err)
 	}
 	const q = `
 		INSERT INTO security_events (
@@ -127,14 +127,16 @@ func (s *PostgresStore) SaveEvent(ctx context.Context, ev *events.SecurityEvent)
 			event_type, category, severity, actor_key, correlation_id, document
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		ON CONFLICT (id) DO NOTHING`
-	_, err = s.pool.Exec(ctx, q,
+	tag, err := s.pool.Exec(ctx, q,
 		ev.ID, ev.SchemaVersion, ev.Timestamp, ev.ReceivedAt, ev.SourceType, ev.SourceName,
 		ev.EventType, string(ev.Category), string(ev.Severity), nullable(ev.ActorKey()),
 		nullable(ev.CorrelationID), doc)
 	if err != nil {
-		return fmt.Errorf("storage: insert event: %w", err)
+		return false, fmt.Errorf("storage: insert event: %w", err)
 	}
-	return nil
+	// ON CONFLICT DO NOTHING affects no rows on a repeat, which is how the
+	// caller learns that this event was already here.
+	return tag.RowsAffected() > 0, nil
 }
 
 // ListEvents implements Store, newest first.

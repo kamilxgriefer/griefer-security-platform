@@ -78,12 +78,22 @@ func testEvents(t *testing.T, store storage.Store) {
 		Actor:  &events.Actor{Type: "identity", ID: "u-1"},
 		Labels: map[string]string{"outcome": "success"},
 	}
-	if err := store.SaveEvent(ctx, ev); err != nil {
+	stored, err := store.SaveEvent(ctx, ev)
+	if err != nil {
 		t.Fatalf("SaveEvent() error = %v", err)
 	}
-	// Producers retry; a retry storm must not become an error storm.
-	if err := store.SaveEvent(ctx, ev); err != nil {
+	if !stored {
+		t.Fatal("SaveEvent() reported a new event as already present")
+	}
+	// Producers retry; a retry storm must not become an error storm — and the
+	// caller has to be able to tell, or it processes the retry as evidence.
+	stored, err = store.SaveEvent(ctx, ev)
+	if err != nil {
 		t.Fatalf("SaveEvent() is not idempotent: %v", err)
+	}
+	if stored {
+		t.Error("SaveEvent() reported a repeat as newly stored; the caller would " +
+			"correlate, project and publish it a second time")
 	}
 
 	got, total, err := store.ListEvents(ctx, 10, 0)
@@ -104,7 +114,7 @@ func testEvents(t *testing.T, store storage.Store) {
 	if err != nil || count != 1 {
 		t.Errorf("CountEvents() = %d, %v; want 1, nil", count, err)
 	}
-	if err := store.SaveEvent(ctx, &events.SecurityEvent{}); err == nil {
+	if _, err := store.SaveEvent(ctx, &events.SecurityEvent{}); err == nil {
 		t.Error("SaveEvent() accepted an event with no id")
 	}
 }
@@ -344,7 +354,7 @@ func TestMemoryStoreBoundsEventRetention(t *testing.T) {
 	store := storage.NewMemoryStore(5)
 	ctx := context.Background()
 	for i := 0; i < 50; i++ {
-		if err := store.SaveEvent(ctx, &events.SecurityEvent{
+		if _, err := store.SaveEvent(ctx, &events.SecurityEvent{
 			ID: fmt.Sprintf("evt-%02d", i), Timestamp: at, Category: events.CategoryAuthentication,
 		}); err != nil {
 			t.Fatalf("SaveEvent() error = %v", err)

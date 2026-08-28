@@ -728,6 +728,16 @@ components:
           type: array
           items: { type: string, enum: [correlation, event_bus] }
           description: Subsystems that failed while handling this event. The event was still accepted and stored.
+        duplicate:
+          type: boolean
+          description: |
+            True when an event with this id had already been ingested. Nothing
+            was stored, correlated, projected or published a second time.
+
+            Ingestion is idempotent on event id, and this field is how a caller
+            can tell. Without it a retry and a first submission looked
+            identical, and re-POSTing one id drove correlation each time on
+            evidence the store had discarded.
 
     BatchResponse:
       type: object

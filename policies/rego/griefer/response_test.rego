@@ -155,6 +155,28 @@ test_single_weak_signal_cannot_trigger_isolation if {
 	decision.effect == "require_approval"
 }
 
+# The isolation rule's conditions are a superset of the general corroboration
+# rule's, so it can never change an effect: delete it and every existing test
+# still passes. What it contributes is a REASON that names the action class, so
+# that an operator reading the trail sees which safety property stopped the
+# action instead of a generic message.
+#
+# This test asserts the reason rather than the verdict. Without it the rule has
+# nothing guarding it, and docs/SAFETY_MODEL.md would be citing a control that
+# could be removed silently.
+test_isolation_refusal_names_the_action_class if {
+	request := object.union(
+		with_action({"type": "isolate_endpoint", "isolation": true, "rollback_action": "release_endpoint_isolation"}),
+		{"incident": object.union(baseline.incident, {
+			"evidence_categories": ["authentication"],
+			"risk_score": 11,
+		})},
+	)
+	decision := response.decision with input as request
+	some reason in decision.reasons
+	contains(reason, "Isolation-class action")
+}
+
 test_corroborated_isolation_may_be_simulated if {
 	decision := response.decision with input as with_action({
 		"type": "isolate_endpoint",

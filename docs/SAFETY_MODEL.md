@@ -72,8 +72,16 @@ Each rule states the failure it prevents, where it lives, and what proves it.
 
 *Prevents:* one forged or misread event locking out a real employee.
 
-Isolation-class actions have their own rule, on top of the general corroboration
-requirement, because their false-positive cost is the highest.
+Isolation-class actions have their own rule. It carries the same corroboration
+bar as the general one and exists to NAME the action class in the refusal, so
+that an operator reading the trail sees which safety property stopped the
+action rather than a generic message — their false-positive cost is the highest,
+and a refusal nobody can attribute is a refusal nobody learns from.
+
+It is deliberately not a *higher* bar: `test_corroborated_isolation_may_be_simulated`
+records that a corroborated isolation may still be simulated automatically. If
+that ever needs to change, it is an ADR about autonomy, not an edit to this
+sentence.
 
 `policies/rego/griefer/response.rego` · `TestSafetyContract_SingleWeakSignalDoesNotIsolate`
 

@@ -52,10 +52,20 @@ COPY --from=build /out/griefer-seed /app/griefer-seed
 
 USER nonroot:nonroot
 
-# Loopback by default. The Compose stack overrides this and publishes the port
-# to the host only.
+# A container has to listen on 0.0.0.0 to be reachable at all, so that stays.
+#
+# GRIEFER_ALLOW_PUBLIC_BIND does NOT stay, and the difference matters. It is the
+# escape hatch config.Validate offers for binding a routable address with no
+# authentication, and baking it into the image meant the refusal that hatch
+# exists to make deliberate could never fire: `docker run` on this image served
+# the whole API — audit trail included — to anyone who could reach the port,
+# with a warning nobody was going to read.
+#
+# Without it the image fails to start unless the operator sets
+# INTERNAL_API_TOKEN, or sets the escape hatch themselves and thereby says so
+# out loud. The Compose stack and the CI contract job both already set it
+# explicitly; nothing that should work stops working.
 ENV GRIEFER_HTTP_ADDR=0.0.0.0:8080 \
-    GRIEFER_ALLOW_PUBLIC_BIND=true \
     GRIEFER_LOG_FORMAT=json \
     GRIEFER_RESPONSE_MODE=simulate
 

@@ -195,6 +195,8 @@ func run() error {
 		return fmt.Errorf("record startup audit entry: %w", err)
 	}
 
+	logAuditChainState(ctx, logger, store, "startup")
+
 	if cfg.Auth.InternalAPIToken == "" {
 		logger.Warn("no INTERNAL_API_TOKEN is configured; the API accepts any caller that can reach it")
 	} else {
@@ -257,6 +259,10 @@ func run() error {
 	}); err != nil {
 		logger.Error("failed to record shutdown audit entry", slog.String("error", err.Error()))
 	}
+	// After the shutdown entry, so the logged head is the last one this process
+	// wrote. Two consecutive lines that disagree about the chain bound exactly
+	// what happened while nobody was watching.
+	logAuditChainState(shutdownCtx, logger, store, "shutdown")
 	logger.Info("GRIEFER stopped")
 	return nil
 }
@@ -449,4 +455,49 @@ func newPublisher(ctx context.Context, cfg config.Config, logger *slog.Logger) b
 		slog.String("url", cfg.NATS.URL), slog.String("stream", cfg.NATS.Stream),
 		slog.Bool("authenticated", cfg.NATS.User != ""))
 	return publisher
+}
+
+// auditChainLogTimeout bounds the chain read taken at startup and shutdown.
+const auditChainLogTimeout = 5 * time.Second
+
+// logAuditChainState writes the audit chain's head to the process log.
+//
+// This is the thinnest useful thing short of a real anchor, and it is worth
+// being precise about what it is. The log is not append-only and usually lives
+// on the same host, so an adversary who rewrites the database must also rewrite
+// the logs. That raises the cost. It does not create evidence.
+//
+// Its real value is operational: docs/operations/AUDIT_CHAIN_RUNBOOK.md tells
+// whoever was woken up to compare the chain_id here against the one the endpoint
+// reports, which is how a restore into the wrong DSN is told apart from a
+// deleted trail. A head_sequence that has gone DOWN between two of these lines
+// is a truncate or a restore, and is the one line worth paging on.
+//
+// A failure to read the chain is logged, never fatal: refusing to start because
+// an integrity check could not run would hand an attacker a way to keep GRIEFER
+// down.
+func logAuditChainState(ctx context.Context, logger *slog.Logger, store storage.Store, phase string) {
+	// Bounded. Verification scans audit_log, and on startup this runs before
+	// the server is listening: an unbounded scan of a large trail would delay
+	// the process becoming ready, and a container health check would kill it
+	// for a diagnostic.
+	ctx, cancel := context.WithTimeout(ctx, auditChainLogTimeout)
+	defer cancel()
+
+	report, err := store.VerifyAuditChain(ctx, 1, 0)
+	if err != nil {
+		logger.WarnContext(ctx, "could not read the audit chain state",
+			slog.String("phase", phase), slog.String("error", err.Error()))
+		return
+	}
+	logger.InfoContext(ctx, "audit chain",
+		slog.String("phase", phase),
+		slog.String("store", report.Store),
+		slog.String("chain_id", report.ChainID),
+		slog.String("status", report.Status),
+		slog.Int64("head_sequence", report.Linkage.HeadSequence),
+		slog.String("head_hash", report.Linkage.HeadHash),
+		slog.Int64("unchained_entries", report.Unchained.Entries),
+		slog.Bool("externally_anchored", report.ExternallyAnchored),
+		slog.Any("warnings", report.Warnings))
 }

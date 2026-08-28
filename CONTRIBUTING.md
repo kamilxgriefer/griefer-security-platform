@@ -42,17 +42,36 @@ make up && make demo
 
 ## Quality gates
 
-`make check` runs everything CI runs:
+`make check` runs most of what CI runs:
 
 | Gate | Command |
 |---|---|
 | Go and Rego formatting | `make fmt-check` |
 | `go vet` | `make vet` |
+| Go lint | `make lint` |
 | Policy type-check and unit tests | `make policy-check` |
 | Go tests, race detector on | `make test` |
 | Console lint | `make lint-console` |
 | TypeScript typecheck | `make typecheck` |
 | Console tests | `make test-console` |
+
+**Most, not everything, and the difference matters.** These need Docker and run
+only in CI: the container build and its non-root and no-shell assertions, the
+deployed-image contract, Trivy over the filesystem and the images, the Compose
+end-to-end run, gitleaks and CodeQL. A green `make check` is a good signal and
+not a promise that CI will pass.
+
+`make lint` also degrades: without `golangci-lint` installed it substitutes
+`go vet`, which is weaker than the CI job, and says so loudly when it does.
+Install the version CI pins:
+
+```bash
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
+```
+
+This table used to say `make check` runs everything CI runs, and to omit `lint`
+entirely — which is the same class of drift as the documentation claims the
+`tests/claims` checker now binds to code.
 
 ## What a good change looks like
 

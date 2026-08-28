@@ -54,8 +54,20 @@ func TestSafetyContract_SingleWeakSignalDoesNotIsolate(t *testing.T) {
 		t.Fatalf("Status = %q, want requires_approval", action.Status)
 	}
 	reasons := strings.Join(action.PolicyDecision.Reasons, " | ")
-	if !strings.Contains(reasons, "single weak signal") && !strings.Contains(reasons, "independent evidence categories") {
-		t.Errorf("reasons = %q, want an explanation an analyst can act on", reasons)
+	// Both, not either.
+	//
+	// docs/SAFETY_MODEL.md cites this test for the isolation-class rule, and
+	// with "or" it did not guard it: the general corroboration rule produces
+	// "independent evidence categories" on its own, so this passed with the
+	// isolation rule deleted. A citation that survives the deletion of the thing
+	// it is cited for is a claim about a guard that is not there — which is the
+	// exact defect the isolation rule itself turned out to be.
+	if !strings.Contains(reasons, "independent evidence categories") {
+		t.Errorf("reasons = %q, want the corroboration rule's explanation", reasons)
+	}
+	if !strings.Contains(reasons, "Isolation-class action") {
+		t.Errorf("reasons = %q, want the isolation rule to name the action class. "+
+			"Without this assertion, deleting that rule leaves this test green.", reasons)
 	}
 }
 

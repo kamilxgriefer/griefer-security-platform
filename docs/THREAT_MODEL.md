@@ -314,7 +314,13 @@ which is a real property and one that depends on someone having kept a copy.
 
 *Mitigated in v0.1*
 
-- Small direct dependency surface: five Go modules, three npm runtime packages.
+- Small direct dependency surface: nine direct Go modules, four npm runtime
+  packages.
+
+<!-- griefer:claims
+count "direct Go modules"    gomod:direct
+count "npm runtime"          npm:console/package.json#dependencies
+-->
 - Lockfiles pin every transitive version by hash.
 - `govulncheck` and CodeQL run in CI.
 - Dependabot proposes updates weekly, grouped so a security bump is not lost in
@@ -352,6 +358,18 @@ one component where being wrong is unacceptable.
 | In-memory store growth | Events, incidents and response actions: FIFO eviction, oldest first. The audit log is deliberately unbounded there — see *Not mitigated* below |
 | Readiness probing | `/ready` fans out to three dependencies and is exempt from the credential, so the result is cached for one second: a flood costs one probe per second rather than one per request |
 | Policy evaluation | Bounded by `GRIEFER_OPA_TIMEOUT`; a slow kernel fails closed |
+
+<!-- griefer:claims
+value "Tracked clients capped at"        go:internal/httpx/middleware.go#maxTrackedClients
+value "clamped to"                       go:internal/storage/store.go#MaxPageSize
+value "evicting least-recently-seen"     go:internal/graph/graph.go#MaxObservedEntities
+value "event ids per edge"               go:internal/graph/graph.go#maxEdgeEvidence
+value "tracked subjects, swept on write" go:internal/correlation/engine.go#maxTrackedSubjects
+value "evidence entries per incident"    go:internal/correlation/engine.go#maxIncidentEvidence
+value "entity ids per finding"           go:internal/correlation/engine.go#maxFindingEntities
+value "Field errors capped at"           go:internal/events/validator.go#maxFieldErrors
+value "the result is cached for"         go:internal/api/handlers.go#readinessCacheTTL
+-->
 
 *Not mitigated*
 

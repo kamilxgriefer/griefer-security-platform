@@ -1,6 +1,7 @@
 import { consoleConfig } from "@/lib/config";
 import { currentSession } from "@/lib/currentSession";
 import { actorHeaders } from "@/lib/principal";
+import { mayAccess } from "@/lib/roles";
 import { isSameOrigin } from "@/lib/request";
 
 export const runtime = "nodejs";
@@ -161,6 +162,26 @@ async function handle(
     return Response.json(
       { error: { code: "not_found", message: "No such endpoint." } },
       { status: 404 },
+    );
+  }
+
+  // The role check runs again here, on the RESOLVED target.
+  //
+  // Middleware already ran it, on the raw request path — and that is exactly
+  // the difference this exists for. Middleware receives the path as the client
+  // wrote it, escapes intact; `target` is built from decoded segments and is
+  // the string that will actually be requested upstream. Checking the thing
+  // being forwarded cannot be defeated by how it was spelled, which is how
+  // `/api/griefer/%61udit` reached this line at all.
+  //
+  // Two layers in the console, for the reason router.go gives about the API:
+  // one layer is one bug away from being none. The API applies its own gate on
+  // top of both.
+  const session = await currentSession();
+  if (session && !mayAccess(session.role, `/api/griefer/${target}`)) {
+    return Response.json(
+      { error: { code: "forbidden", message: "This endpoint is administrator-only." } },
+      { status: 403 },
     );
   }
 

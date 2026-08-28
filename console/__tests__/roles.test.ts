@@ -71,3 +71,44 @@ describe("roles", () => {
     expect(roleLabel("analyst")).toBe("Analyst");
   });
 });
+
+describe("path normalisation", () => {
+  // Measured against a running console before the fix: /api/griefer/audit was
+  // refused for an analyst and /api/griefer/%61udit was forwarded upstream.
+  // Middleware sees the raw path; the gateway's catch-all segments arrive
+  // decoded. The two halves disagreed about what a path is.
+  it("refuses an admin-only path however it is spelled", () => {
+    for (const path of [
+      "/api/griefer/%61udit",
+      "/api/griefer/%2561udit",
+      "/api/griefer/audit%2Fverify",
+      "/api/griefer/audit%2fverify",
+      "/api/griefer/audit/",
+      "/api/griefer//audit",
+      "/API/GRIEFER/AUDIT",
+      "/%61udit",
+      "/audit/",
+    ]) {
+      expect(mayAccess("analyst", path)).toBe(false);
+    }
+  });
+
+  it("refuses a path it cannot decode rather than guessing", () => {
+    // A malformed escape routes nowhere an analyst needs, so refusing costs
+    // nothing; guessing costs the gate.
+    for (const path of ["/api/griefer/%zz", "/api/griefer/%", "/%e0%a4%a"]) {
+      expect(mayAccess("analyst", path)).toBe(false);
+    }
+  });
+
+  it("still lets an analyst through on paths that only look similar", () => {
+    for (const path of [
+      "/api/griefer/incidents",
+      "/api/griefer/events",
+      "/auditorium",
+      "/api/griefer/actions",
+    ]) {
+      expect(mayAccess("analyst", path)).toBe(true);
+    }
+  });
+});

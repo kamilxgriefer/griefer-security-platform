@@ -48,10 +48,60 @@ function matches(pathname: string, prefixes: readonly string[]): boolean {
   return prefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
-/** mayAccess reports whether role is allowed to reach pathname. */
+/**
+ * normalise brings a request path to the form the prefixes are written in.
+ *
+ * This exists because the two halves of the console disagreed about what a path
+ * IS. Next.js middleware receives `nextUrl.pathname` exactly as the client sent
+ * it, percent-escapes intact, while a route handler receives its catch-all
+ * segments already decoded. So `/api/griefer/%61udit` failed the prefix match
+ * here — `%61` is not `a` — and then arrived at the gateway as `audit` and was
+ * forwarded. Measured against a running console: `/api/griefer/audit` was
+ * refused and `/api/griefer/%61udit` was not. `audit%2Fverify` did the same
+ * with an encoded separator.
+ *
+ * Decoding repeats, because one pass leaves `%2561` as `%61` and the match
+ * would go on being defeatable by adding a layer. It is bounded because an
+ * unbounded loop on attacker input is its own problem.
+ *
+ * Returns null when the path cannot be decoded. The caller refuses those: a
+ * path this function cannot read is not one it can promise anything about, and
+ * a malformed path routes nowhere an analyst needs.
+ */
+function normalise(pathname: string): string | null {
+  let path = pathname;
+  for (let i = 0; i < 4; i += 1) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(path);
+    } catch {
+      return null;
+    }
+    if (decoded === path) break;
+    path = decoded;
+  }
+  if (path.includes("%")) return null;
+  // `//audit` and `/audit/` must not spell a path the prefix match misses.
+  path = path.replace(/\/+/g, "/");
+  if (path.length > 1 && path.endsWith("/")) path = path.slice(0, -1);
+  // Lower-cased only for the deny check, which can only ever match MORE paths.
+  return path.toLowerCase();
+}
+
+/**
+ * mayAccess reports whether role is allowed to reach pathname.
+ *
+ * Note what this is and is not. It is the console's own authorisation, and the
+ * GRIEFER API applies its own role gate to the same request — which is what
+ * contained the bypass above, because the gateway forwards the session's real
+ * role rather than the caller's word for it. A layer whose failure is invisible
+ * because another layer holds is still a failed layer.
+ */
 export function mayAccess(role: Role, pathname: string): boolean {
   if (role === "admin") return true;
-  return !matches(pathname, ADMIN_ONLY_PREFIXES) && !matches(pathname, ADMIN_ONLY_API_PREFIXES);
+  const path = normalise(pathname);
+  if (path === null) return false;
+  return !matches(path, ADMIN_ONLY_PREFIXES) && !matches(path, ADMIN_ONLY_API_PREFIXES);
 }
 
 /** Whether the role may create, disable or re-role accounts. */

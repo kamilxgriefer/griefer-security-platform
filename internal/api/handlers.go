@@ -59,7 +59,44 @@ type ReadinessResponse struct {
 	SimulationOnly bool   `json:"simulation_only"`
 }
 
+// readinessCacheTTL bounds how often a probe reaches the dependencies.
+//
+// /ready is exempt from the service credential, because a platform has to be
+// able to ask whether a container is ready before it holds one — and each call
+// fans out to PostgreSQL, the Policy Kernel and the event bus. Unbounded, one
+// address turns a cheap unauthenticated request into three backend round trips
+// and can exhaust the connection pool, which then makes real evaluations time
+// out and fail closed. docs/THREAT_MODEL.md T10 claimed request floods were
+// bounded by a per-client token bucket; the limiter covers write endpoints and
+// has never covered this one.
+//
+// A second is short enough that an orchestrator sees a state change
+// immediately on any realistic probe interval, and long enough that a flood
+// costs one probe per second instead of one per request.
+const readinessCacheTTL = time.Second
+
 func (s *Service) readiness(ctx context.Context) ReadinessResponse {
+	now := s.now()
+	s.readinessMu.Lock()
+	if !s.readinessAt.IsZero() && now.Sub(s.readinessAt) < readinessCacheTTL {
+		cached := s.readinessBody
+		s.readinessMu.Unlock()
+		// The timestamp is the caller's, not the probe's: a client must not be
+		// told a stale time, only a recently-checked verdict.
+		cached.Time = now.UTC()
+		return cached
+	}
+	s.readinessMu.Unlock()
+
+	body := s.probeReadiness(ctx)
+
+	s.readinessMu.Lock()
+	s.readinessAt, s.readinessBody = now, body
+	s.readinessMu.Unlock()
+	return body
+}
+
+func (s *Service) probeReadiness(ctx context.Context) ReadinessResponse {
 	ctx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
 	defer cancel()
 

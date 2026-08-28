@@ -376,3 +376,56 @@ func ids(list []*incidents.Incident) []string {
 	}
 	return out
 }
+
+// TestTheMemoryStoreBoundsIncidentsAndActions.
+//
+// Events had a bound and nothing else did, while this store is the DEFAULT:
+// GRIEFER_STORAGE_POSTGRES is false unless set. Correlation opens an incident
+// per subject and the subject is producer-chosen, so both maps grew with
+// distinct subjects and nothing removed from either.
+//
+// The audit log is deliberately still unbounded here — see the comment on
+// MemoryStore. Evicting its oldest entries would leave the chain naming a
+// predecessor that is gone, which verify reports as a deleted prefix and cannot
+// tell apart from the attack it exists to catch.
+func TestTheMemoryStoreBoundsIncidentsAndActions(t *testing.T) {
+	const limit = 20
+	store := storage.NewMemoryStore(limit)
+	ctx := context.Background()
+
+	for i := 0; i < limit*3; i++ {
+		inc := sampleIncident(fmt.Sprintf("inc-%04d", i), 10, events.SeverityLow, at)
+		if err := store.SaveIncident(ctx, inc); err != nil {
+			t.Fatalf("SaveIncident(%d) error = %v", i, err)
+		}
+		action := &incidents.ResponseAction{
+			ID: fmt.Sprintf("act-%04d", i), IncidentID: inc.ID, ActionType: "preserve_evidence",
+			Mode: incidents.ModeSimulate, Status: incidents.ActionSimulated,
+			RequestedBy: "system:griefer", CreatedAt: at,
+		}
+		if err := store.SaveAction(ctx, action); err != nil {
+			t.Fatalf("SaveAction(%d) error = %v", i, err)
+		}
+	}
+
+	_, incidentTotal, err := store.ListIncidents(ctx, storage.IncidentFilter{Limit: storage.MaxPageSize})
+	if err != nil {
+		t.Fatalf("ListIncidents() error = %v", err)
+	}
+	if incidentTotal > limit {
+		t.Errorf("store holds %d incidents, above the bound of %d", incidentTotal, limit)
+	}
+
+	_, actionTotal, err := store.ListActions(ctx, "", storage.MaxPageSize, 0)
+	if err != nil {
+		t.Fatalf("ListActions() error = %v", err)
+	}
+	if actionTotal > limit {
+		t.Errorf("store holds %d actions, above the bound of %d", actionTotal, limit)
+	}
+
+	// Oldest-first, like events: the most recent record is the one kept.
+	if _, err := store.GetIncident(ctx, fmt.Sprintf("inc-%04d", limit*3-1)); err != nil {
+		t.Errorf("the most recent incident was evicted: %v", err)
+	}
+}

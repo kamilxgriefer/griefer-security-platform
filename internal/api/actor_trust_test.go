@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kamilxgriefer/griefer-security-platform/internal/api"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/audit"
@@ -530,4 +531,65 @@ func TestAnUnattributedRequestCannotClaimToBeHumanInitiated(t *testing.T) {
 				claimedHuman, claimedAutomated)
 		}
 	})
+}
+
+// remoteKernel answers as a remote OPA would: its own package and version,
+// which come from the bundle OPA serves rather than from this binary.
+type remoteKernel struct{}
+
+func (remoteKernel) Engine() string { return policy.EngineRemote }
+
+func (remoteKernel) Health(context.Context) error { return nil }
+
+func (remoteKernel) Close() error { return nil }
+
+func (remoteKernel) Evaluate(context.Context, policy.Input) (incidents.PolicyDecision, error) {
+	return incidents.PolicyDecision{
+		Effect: "allow", Allow: true, Reasons: []string{"allowed by the remote bundle"},
+		PolicyPackage: "griefer.response", PolicyVersion: "9.9.9-from-opa",
+		Engine: policy.EngineRemote, EvaluatedAt: time.Now().UTC(),
+	}, nil
+}
+
+// TestARemoteDecisionIsNotAttributedToTheBinarysPolicy.
+//
+// policies.Revision() hashes the Rego embedded in this binary. A remote OPA
+// serves its own bundle — precisely the artefact THREAT_MODEL.md T4 assumes an
+// attacker can replace — so recording the binary's hash against a remote
+// decision attributes it to a policy that had no part in it.
+//
+// It does so with the one field in the entry that looks independently derived,
+// which is what makes it worse than saying nothing: a responder comparing
+// hashes after a suspected policy tamper would compare the wrong thing and be
+// reassured by it.
+func TestARemoteDecisionIsNotAttributedToTheBinarysPolicy(t *testing.T) {
+	h := newActorHarness(t, harnessOptions{kernel: remoteKernel{}})
+	inc := h.seedScenario()
+
+	resp := h.evaluate(trustedActor, trustedRole,
+		evaluateBody(inc.ID, "preserve_evidence", trustedActor, false))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", resp.StatusCode, h.body(resp))
+	}
+
+	entries := h.allAudit()
+	var seen int
+	for _, e := range entries {
+		rev, ok := e.Details["policy_revision"].(string)
+		if !ok || e.Action != audit.ActionPolicyEvaluated {
+			continue
+		}
+		seen++
+		if strings.HasPrefix(rev, "sha256:") {
+			t.Errorf("entry %s records policy_revision = %q, which is this binary's embedded "+
+				"policy — the decision came from a remote kernel serving its own bundle", e.ID, rev)
+		}
+		if !strings.Contains(rev, "9.9.9-from-opa") {
+			t.Errorf("entry %s records policy_revision = %q; it should name what the remote "+
+				"kernel reported", e.ID, rev)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no policy.evaluated entry was written")
+	}
 }

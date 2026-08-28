@@ -44,9 +44,22 @@ type MemoryStore struct {
 	auditHead    string
 	auditHeadSeq int64
 
-	// maxEvents bounds retention. An in-memory store with unbounded growth is
-	// an availability bug waiting for a busy day.
-	maxEvents int
+	// maxEvents bounds event retention, and maxRecords bounds incidents and
+	// response actions. An in-memory store with unbounded growth is an
+	// availability bug waiting for a busy day — and events were the only thing
+	// that had a bound, while this store is the DEFAULT
+	// (GRIEFER_STORAGE_POSTGRES is false unless set).
+	//
+	// The audit log is deliberately NOT bounded here, and that is not an
+	// oversight. Evicting its oldest entries would leave the surviving chain
+	// naming a predecessor that is gone — which verify reports as a deleted
+	// prefix, indistinguishable from the attack it exists to catch — and
+	// refusing to append past a limit would be the suppression primitive this
+	// subsystem spends its whole design avoiding. Neither is acceptable, so the
+	// bound is absent and stated rather than faked. It is one more reason this
+	// store is not a deployment option.
+	maxEvents  int
+	maxRecords int
 }
 
 // NewMemoryStore returns an empty in-memory store retaining at most maxEvents
@@ -56,10 +69,11 @@ func NewMemoryStore(maxEvents int) *MemoryStore {
 		maxEvents = 10000
 	}
 	return &MemoryStore{
-		eventIDs:  make(map[string]struct{}),
-		incidents: make(map[string]*incidents.Incident),
-		actions:   make(map[string]*incidents.ResponseAction),
-		maxEvents: maxEvents,
+		eventIDs:   make(map[string]struct{}),
+		incidents:  make(map[string]*incidents.Incident),
+		actions:    make(map[string]*incidents.ResponseAction),
+		maxEvents:  maxEvents,
+		maxRecords: maxEvents,
 		// Minted per store. Two memory stores hold two different trails, which
 		// is what stops a verification result from one being read as evidence
 		// about the other.
@@ -150,7 +164,23 @@ func (s *MemoryStore) SaveIncident(_ context.Context, inc *incidents.Incident) e
 	}
 	clone := deepCopyIncident(inc)
 	s.incidents[inc.ID] = clone
+	s.evictIncidentsLocked()
 	return nil
+}
+
+// evictIncidentsLocked drops the oldest incidents once the store is over its
+// bound, oldest-first, the way events already were.
+//
+// Correlation opens an incident per subject, and a subject is chosen by the
+// producer, so this map grew with distinct subjects and nothing removed from
+// it. Dropping the oldest loses history, which is a real cost and the smaller
+// one: the alternative is the process dying and losing all of it.
+func (s *MemoryStore) evictIncidentsLocked() {
+	for len(s.incidentOrder) > s.maxRecords {
+		oldest := s.incidentOrder[0]
+		s.incidentOrder = s.incidentOrder[1:]
+		delete(s.incidents, oldest)
+	}
 }
 
 // GetIncident implements Store.
@@ -226,6 +256,11 @@ func (s *MemoryStore) saveActionLocked(action *incidents.ResponseAction) {
 		s.actionOrder = append(s.actionOrder, action.ID)
 	}
 	s.actions[action.ID] = deepCopyAction(action)
+	for len(s.actionOrder) > s.maxRecords {
+		oldest := s.actionOrder[0]
+		s.actionOrder = s.actionOrder[1:]
+		delete(s.actions, oldest)
+	}
 }
 
 // SaveActionWithAudit implements Store.

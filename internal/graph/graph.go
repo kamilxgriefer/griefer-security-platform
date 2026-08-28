@@ -138,7 +138,11 @@ func (g *Graph) upsertEntityLocked(e Entity) *Entity {
 	if e.Name != "" {
 		existing.Name = e.Name
 	}
-	if e.Criticality.Rank() > existing.Criticality.Rank() {
+	// Criticality is raised only by a DECLARED entity — the asset inventory —
+	// never by an observation. The ratchet is one-way, so letting telemetry
+	// turn it means a producer permanently promotes any asset it names, and
+	// the promotion outlives the event that made it.
+	if !e.Observed && e.Criticality.Rank() > existing.Criticality.Rank() {
 		existing.Criticality = e.Criticality
 	}
 	if e.Observed {

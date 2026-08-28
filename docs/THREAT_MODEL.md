@@ -132,16 +132,28 @@ highest-value attack in the design: policy *is* the safety property.
 
 - Policy is embedded in the binary at build time for the embedded kernel — changing
   it requires changing the build.
-- The Compose stack mounts `policies/rego` **read-only** into OPA. GRIEFER cannot
-  write to its own policy.
+- The Compose stack **bakes the policy into the OPA image** and leaves OPA's
+  management API read-only. GRIEFER cannot write to its own policy, and neither
+  can anything holding write access to the host directory — which a mounted
+  policy directory would have allowed, and which is why it is not mounted.
+  (This entry previously described a read-only mount. That control does not
+  exist and would have been the weaker of the two.)
 - `default effect := "deny"`, and malformed input is denied explicitly rather than
   producing an undefined decision.
 - Every decision records `policy_package` and `policy_version`, so a swap is
   visible in the audit trail afterwards.
+- `policy_revision` in the audit entry names the ruleset that actually decided.
+  For an embedded or fail-closed decision that is the SHA-256 of the Rego in
+  this binary; for a remote decision it names what the kernel reported, prefixed
+  `remote:`, and does **not** claim the binary's hash. The distinction is the
+  point of the field on this threat: attributing a remote decision to the
+  binary's policy would hand a responder comparing hashes after a suspected
+  tamper the wrong artefact — and reassure them with the one value in the entry
+  that looks independently derived.
 - `rawDecision.toDecision` rejects a decision with an unrecognised effect, an
   `allow` that disagrees with its effect, or no reasons — a subverted policy
   returning nonsense produces a denial, not permission.
-- `opa test` runs 25 policy unit tests in CI, and the Go suite independently
+- `opa test` runs 26 policy unit tests in CI, and the Go suite independently
   asserts the same rules through the kernel.
 
 *Not mitigated*
@@ -205,7 +217,16 @@ normal, so that genuinely anomalous activity later reads as expected.
 
 - **The graph does learn from telemetry.** An attacker can create entities and
   relationships by generating events, which could inflate a future blast-radius
-  estimate. Bounded by `maxEdgeEvidence` and the 3-hop traversal limit, but real.
+  estimate. Bounded by `maxEdgeEvidence`, the 3-hop traversal limit and the
+  entity cap, but real.
+
+  What it no longer learns is **criticality**. `target.criticality` is a
+  producer assertion; it used to be written straight into the graph, where the
+  ratchet raises criticality and never lowers it — so one event permanently
+  promoted any asset it named, fired the critical-resource detection rule and
+  inflated every blast radius that entity appeared in. Only a declared
+  inventory entry raises criticality now; the producer's claim is kept beside
+  the entity as `claimed_criticality`, which is what it always was.
 - **`first_seen_for_actor` is a producer assertion** GRIEFER cannot verify.
 
 *Residual.* Moderate. The absence of learned baselines removes the classic
@@ -328,16 +349,22 @@ one component where being wrong is unacceptable.
 | Incident growth | 100 event ids and 100 entity ids per finding; 200 evidence entries per incident |
 | Validation error amplification | Field errors capped at 20 |
 | Slow clients | Read, write and idle timeouts on every connection |
-| In-memory store growth | Events only: FIFO eviction at `maxEvents`. Incidents, response actions and the audit log are **not** bounded there — see *Not mitigated* below |
+| In-memory store growth | Events, incidents and response actions: FIFO eviction, oldest first. The audit log is deliberately unbounded there — see *Not mitigated* below |
+| Readiness probing | `/ready` fans out to three dependencies and is exempt from the credential, so the result is cached for one second: a flood costs one probe per second rather than one per request |
 | Policy evaluation | Bounded by `GRIEFER_OPA_TIMEOUT`; a slow kernel fails closed |
 
 *Not mitigated*
 
 - **No global concurrency limit** beyond per-client rate limiting.
-- **The in-memory store bounds only events.** Incidents, response actions and the
-  audit log grow there without limit, and that store is the default
-  (`GRIEFER_STORAGE_POSTGRES` defaults to false). It is documented as not a
-  deployment option, which is a reason not to run it and not a bound.
+- **The in-memory store cannot bound its audit log.** Events, incidents and
+  actions evict oldest-first; the trail does not, and the reason is that both
+  ways out are worse. Evicting its oldest entries leaves the surviving chain
+  naming a predecessor that is gone, which `verify` reports as a deleted prefix
+  and cannot tell apart from the attack that check exists to catch; refusing to
+  append past a limit is the suppression primitive the audit subsystem spends
+  its design avoiding. So the bound is absent and said out loud. One more reason
+  that store is not a deployment option — and it is the default
+  (`GRIEFER_STORAGE_POSTGRES` is false unless set).
 - **Read endpoints are not rate limited**, deliberately: an analyst refreshing a
   console should never be throttled out of an investigation. The cost is that a
   caller holding the service credential can drive them freely.

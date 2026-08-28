@@ -90,11 +90,28 @@ func (g *Graph) Project(ev *events.SecurityEvent) {
 			targetType = TypeService
 		}
 		targetID := EntityID(targetType, ev.Target.ID)
+		// The producer's criticality is RECORDED, not believed.
+		//
+		// Criticality is the asset inventory's vocabulary: docs/THREAT_MODEL.md
+		// T6 lists "the asset inventory is operator-supplied and not learned
+		// from telemetry" among the things that make data poisoning hard. This
+		// line was learning it from telemetry. A producer could declare any
+		// target critical, upsertEntityLocked ratchets criticality upward and
+		// never down, and the claim then fired the critical-resource detection
+		// rule and inflated every blast radius that entity appeared in — which
+		// is risk score, which is the automation floor.
+		//
+		// Keeping it as an attribute loses nothing an analyst wants: the claim
+		// is still visible beside the entity, labelled as the producer's.
+		attrs := map[string]string{}
+		if ev.Target.Criticality != "" {
+			attrs["claimed_criticality"] = ev.Target.Criticality
+		}
 		g.UpsertEntity(Entity{
 			ID: targetID, Type: targetType, Key: ev.Target.ID,
 			Name:      ev.Target.Name,
 			FirstSeen: at, LastSeen: at, Observed: true,
-			Criticality: Criticality(ev.Target.Criticality),
+			Attributes: attrs,
 		})
 		g.UpsertEdge(actorID, targetID, relationForEvent(ev), at, ev.ID)
 	}

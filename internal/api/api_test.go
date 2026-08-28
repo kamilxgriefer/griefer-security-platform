@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -608,5 +609,62 @@ func TestAReplayedEventIdIsNotCorrelatedTwice(t *testing.T) {
 	if got := countIncidents(); got != incidentsAfterFirst {
 		t.Errorf("incidents = %d after nine replays, want %d: correlation ran on evidence "+
 			"the store discarded", got, incidentsAfterFirst)
+	}
+}
+
+// countingKernel records how many readiness probes reach it.
+type countingKernel struct {
+	inner  policy.Kernel
+	health atomic.Int64
+}
+
+func (k *countingKernel) Evaluate(ctx context.Context, in policy.Input) (incidents.PolicyDecision, error) {
+	return k.inner.Evaluate(ctx, in)
+}
+
+func (k *countingKernel) Health(ctx context.Context) error {
+	k.health.Add(1)
+	return k.inner.Health(ctx)
+}
+
+func (k *countingKernel) Engine() string { return k.inner.Engine() }
+func (k *countingKernel) Close() error   { return k.inner.Close() }
+
+// TestReadinessDoesNotFanOutOncePerRequest.
+//
+// /ready is exempt from the service credential — a platform has to ask whether
+// a container is ready before it holds one — and each probe fans out to
+// PostgreSQL, the Policy Kernel and the event bus. Unbounded, one address turns
+// a cheap unauthenticated request into three backend round trips, exhausts the
+// connection pool, and real policy evaluations then time out and fail closed:
+// a denial-of-service that ends with GRIEFER refusing every action.
+//
+// THREAT_MODEL.md T10 credited a per-client token bucket for bounding request
+// floods. That limiter covers the write endpoints and has never covered this
+// one.
+func TestReadinessDoesNotFanOutOncePerRequest(t *testing.T) {
+	inner, err := policy.NewEmbeddedKernel()
+	if err != nil {
+		t.Fatalf("NewEmbeddedKernel() error = %v", err)
+	}
+	kernel := &countingKernel{inner: inner}
+	h := newHarness(t, harnessOptions{kernel: kernel, skipInventory: true})
+
+	const probes = 50
+	for i := 0; i < probes; i += 1 {
+		resp := h.do(http.MethodGet, "/ready", "")
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("probe %d status = %d", i, resp.StatusCode)
+		}
+	}
+
+	if got := kernel.health.Load(); got >= probes {
+		t.Errorf("the kernel was probed %d times for %d requests; readiness is not bounded",
+			got, probes)
+	}
+	// And it still answers: a cache that never refreshed would be worse than
+	// the flood.
+	if kernel.health.Load() == 0 {
+		t.Error("the kernel was never probed at all")
 	}
 }

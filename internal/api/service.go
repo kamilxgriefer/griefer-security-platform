@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/kamilxgriefer/griefer-security-platform/internal/audit"
@@ -52,6 +53,11 @@ type Service struct {
 	// ruleCount is reported on the status endpoint so an operator can tell a
 	// running-but-ruleless deployment from a healthy one.
 	ruleCount int
+
+	// readinessMu guards the cached readiness probe below.
+	readinessMu   sync.Mutex
+	readinessAt   time.Time
+	readinessBody ReadinessResponse
 }
 
 // ServiceOptions wires a Service. Every dependency is explicit: there is no
@@ -387,6 +393,31 @@ func (s *Service) EvaluateAction(ctx context.Context, req EvaluateRequest) (*inc
 
 	// base is the audit shape every outcome shares, so no branch can quietly
 	// omit the actor, the request id or the subject.
+	// policyRevisionFor names the policy that actually produced the decision.
+	//
+	// policies.Revision() hashes the Rego embedded in THIS BINARY. That is the
+	// policy the embedded kernel evaluates, and it is emphatically not the one a
+	// remote OPA evaluates: OPA serves its own bundle, which is precisely the
+	// artefact docs/THREAT_MODEL.md T4 assumes an attacker can replace.
+	//
+	// Recording the binary's hash against a remote decision attributes it to a
+	// policy that had no part in it — and does so with the one field in the
+	// entry that looks independently derived, so a responder comparing hashes
+	// after a suspected tamper would compare the wrong thing and find it
+	// reassuring. For a remote decision the honest value names the package and
+	// version the kernel reported, and says where it came from.
+	policyRevisionFor := func(d *incidents.PolicyDecision) string {
+		if d == nil || d.Engine != policy.EngineRemote {
+			// No remote policy answered. Either GRIEFER refused before
+			// consulting one, or the embedded kernel decided, or the kernel was
+			// unreachable and the fail-closed path did — and in all three the
+			// ruleset that governed is the one compiled into this binary, whose
+			// hash is exactly the identifier a responder wants.
+			return policies.Revision()
+		}
+		return fmt.Sprintf("remote:%s@%s", d.PolicyPackage, d.PolicyVersion)
+	}
+
 	base := func(result, auditAction, outcome, reason string, extra map[string]any) audit.Entry {
 		details := map[string]any{
 			"result":             result,
@@ -394,7 +425,7 @@ func (s *Service) EvaluateAction(ctx context.Context, req EvaluateRequest) (*inc
 			"action_type":        req.ActionType,
 			"mode":               string(mode),
 			"response_action_id": action.ID,
-			"policy_revision":    policies.Revision(),
+			"policy_revision":    policyRevisionFor(action.PolicyDecision),
 		}
 		for k, v := range extra {
 			details[k] = v

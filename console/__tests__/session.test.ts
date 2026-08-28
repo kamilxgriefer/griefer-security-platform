@@ -93,3 +93,32 @@ describe("session tokens", () => {
     }
   });
 });
+
+describe("placeholder secrets", () => {
+  // A configuration copied from the published .env.example must not produce a
+  // working gate. The length check alone was not enough: the placeholder in
+  // that file had been padded past 32 characters, so it passed.
+  it("refuses a secret copied from the published example file", async () => {
+    const { authConfigured, PLACEHOLDER_SECRET_MARKER } = await import("@/lib/config");
+    const base = {
+      apiBaseUrl: "http://127.0.0.1:8080",
+      internalApiToken: "a-real-token",
+      sessionSecret: "x".repeat(64),
+      adminUsername: "admin",
+      adminPasswordSalt: "salt",
+      adminPasswordHash: "hash",
+      analystUsername: "analyst",
+      analystPasswordSalt: "",
+      analystPasswordHash: "",
+      secureCookies: false,
+      appEnv: "test",
+    };
+    expect(authConfigured(base)).toBe(true);
+
+    // Long enough to pass the length check, and still published.
+    const published = `placeholder-${PLACEHOLDER_SECRET_MARKER}-at-least-32-chars`;
+    expect(published.length).toBeGreaterThanOrEqual(32);
+    expect(authConfigured({ ...base, sessionSecret: published })).toBe(false);
+    expect(authConfigured({ ...base, internalApiToken: published })).toBe(false);
+  });
+});

@@ -106,6 +106,15 @@ type Auth struct {
 	InternalAPIToken string
 }
 
+// PlaceholderSecretMarker appears in every placeholder value in .env.example.
+//
+// It is a marker rather than an exact-value list so that adding a placeholder
+// to that file cannot quietly add a working credential: anything carrying it is
+// refused, whatever else it says. console/lib/config.ts holds the same literal
+// for the same reason, duplicated across a language boundary the way the role
+// names are.
+const PlaceholderSecretMarker = "run-make-secrets"
+
 // Warning is a non-fatal configuration concern surfaced at startup.
 type Warning struct {
 	Setting string
@@ -228,6 +237,26 @@ func (c Config) Validate() ([]Warning, error) {
 	} {
 		if d <= 0 {
 			return nil, fmt.Errorf("config: %s must be positive", name)
+		}
+	}
+
+	// A value published in a public repository is not a secret. Every
+	// placeholder in .env.example carries this marker precisely so that a
+	// configuration copied from it fails loudly instead of running on a
+	// credential anyone can read — which is the failure mode that file's own
+	// instructions are trying to prevent, and instructions are not a control.
+	for _, s := range []struct {
+		setting string
+		value   string
+	}{
+		{"INTERNAL_API_TOKEN", c.Auth.InternalAPIToken},
+		{"NATS_PASSWORD", c.NATS.Password},
+		{"GRIEFER_POSTGRES_DSN", c.Postgres.DSN},
+	} {
+		if strings.Contains(s.value, PlaceholderSecretMarker) {
+			return nil, fmt.Errorf(
+				"config: %s still holds the placeholder from .env.example, which is published and therefore not a secret. "+
+					"Run `make secrets` to generate real values", s.setting)
 		}
 	}
 

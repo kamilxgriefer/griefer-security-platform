@@ -50,7 +50,20 @@ export function consoleConfig(): ConsoleConfig {
  * data. A misconfigured gate that fails open is worse than no gate, because it
  * looks protected.
  */
+/**
+ * PLACEHOLDER_SECRET_MARKER appears in every placeholder value in .env.example.
+ *
+ * A value published in a public repository is not a secret, so a configuration
+ * copied from that file must fail the gate rather than sign sessions with a key
+ * anybody can read. The same literal lives in internal/config/config.go, on the
+ * other side of a language boundary, for the same reason the role names are
+ * duplicated there.
+ */
+export const PLACEHOLDER_SECRET_MARKER = "run-make-secrets";
+
 export function authConfigured(config: ConsoleConfig = consoleConfig()): boolean {
+  if (config.sessionSecret.includes(PLACEHOLDER_SECRET_MARKER)) return false;
+  if (config.internalApiToken.includes(PLACEHOLDER_SECRET_MARKER)) return false;
   if (config.sessionSecret.length < 32) return false;
   // At least one account must be usable, and it must be the administrator.
   // A deployment with only an analyst configured has nobody who can provision

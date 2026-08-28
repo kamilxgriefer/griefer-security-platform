@@ -324,3 +324,43 @@ func TestRedactedHidesTheDatabasePassword(t *testing.T) {
 		t.Error("Redacted() mutated or failed to copy the original")
 	}
 }
+
+// TestASecretCopiedFromTheExampleFileIsRefused.
+//
+// .env.example instructs the operator to copy it and run `make secrets`. An
+// instruction is not a control: a deployment that skips the second step runs on
+// credentials published in a public repository, and every guard around them
+// passes because the values are well-formed.
+//
+// The console holds the same rule in console/lib/config.ts, because the two
+// halves read the same file.
+func TestASecretCopiedFromTheExampleFileIsRefused(t *testing.T) {
+	for _, tc := range []struct{ setting, value string }{
+		{"INTERNAL_API_TOKEN", "placeholder-" + config.PlaceholderSecretMarker},
+		{"NATS_PASSWORD", "placeholder-" + config.PlaceholderSecretMarker},
+	} {
+		t.Run(tc.setting, func(t *testing.T) {
+			isolate(t)
+			t.Setenv(tc.setting, tc.value)
+
+			_, _, err := config.Load()
+			if err == nil {
+				t.Fatalf("Load() accepted %s = %q, which is published in .env.example", tc.setting, tc.value)
+			}
+			if !strings.Contains(err.Error(), tc.setting) {
+				t.Errorf("error does not name the setting an operator has to fix: %v", err)
+			}
+			if !strings.Contains(err.Error(), "make secrets") {
+				t.Errorf("error does not say how to fix it: %v", err)
+			}
+		})
+	}
+
+	t.Run("a real value is accepted", func(t *testing.T) {
+		isolate(t)
+		t.Setenv("INTERNAL_API_TOKEN", "3f9a1c77b0e24d5e8a6c1f0b9d2e4a67")
+		if _, _, err := config.Load(); err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+	})
+}

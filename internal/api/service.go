@@ -320,9 +320,13 @@ type EvaluateRequest struct {
 	ActionType  string `json:"action_type"`
 	Mode        string `json:"mode"`
 	RequestedBy string `json:"requested_by"`
-	// Automated marks the request as machine-initiated. Human-initiated
-	// requests are still policy-gated; the flag only tells the policy which bar
-	// to apply.
+	// Automated is ACCEPTED AND IGNORED.
+	//
+	// It stays on the contract because clients send it and a hard rejection
+	// would break them for no gain, but it takes no part in the decision: the
+	// service derives automation from whether the request carries an operator
+	// identity. See EvaluateAction. A field a caller controls must never
+	// select which safety rules run.
 	Automated bool `json:"automated"`
 }
 
@@ -446,11 +450,27 @@ func (s *Service) EvaluateAction(ctx context.Context, req EvaluateRequest) (*inc
 			FindingCount:       len(inc.Findings),
 		},
 		Request: policy.RequestInput{
-			// Automated is derived, not accepted. It selects which corroboration
-			// bar the policy applies, so a caller able to set it could choose
-			// the bar it is judged against. A request carrying an operator is a
-			// person pressing a button, by definition.
-			Automated:   principal.Zero() && req.Automated,
+			// Automated is DERIVED, and the body has no vote in either
+			// direction. It selects which corroboration bar the policy
+			// applies — three approval rules in response.rego are gated on it:
+			// the two-evidence-category floor, the isolation rule, and the
+			// risk-score threshold — so a caller who could set it could choose
+			// whether any of them ran.
+			//
+			// An earlier form was `principal.Zero() && req.Automated`, which
+			// closed only one direction. It stopped a request carrying an
+			// operator from claiming to be automation, and left the far worse
+			// direction open: an unattributed caller sending
+			// `"automated": false` claimed to be a person, and all three rules
+			// went quiet at once. One weak signal was then enough to reach
+			// effect "allow" on an isolation-class action.
+			//
+			// The rule is now the one the safety model actually needs. GRIEFER
+			// cannot see a human; it can only see whether this request carries
+			// an operator identity that the credential check already vouched
+			// for. Anything else is its own automation, and is held to the
+			// stricter bar.
+			Automated:   principal.Zero(),
 			RequestedBy: actor,
 		},
 	}

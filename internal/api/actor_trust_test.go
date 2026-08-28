@@ -12,6 +12,7 @@ package api_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -467,4 +468,66 @@ func (k *recordingKernel) last(t *testing.T) policy.Input {
 		t.Fatal("the Policy Kernel was never consulted")
 	}
 	return k.inputs[len(k.inputs)-1]
+}
+
+// TestAnUnattributedRequestCannotClaimToBeHumanInitiated closes the direction
+// the earlier derivation left open.
+//
+// Three approval rules in response.rego are gated on input.request.automated:
+// the two-evidence-category floor, the isolation-class rule, and the
+// risk-score threshold. A caller who can set that field can decide whether any
+// of them runs.
+//
+// The earlier form, principal.Zero() && req.Automated, stopped a request
+// carrying an operator from claiming to be automation — and let an
+// unattributed caller claim to be a person, silencing all three rules at once.
+func TestAnUnattributedRequestCannotClaimToBeHumanInitiated(t *testing.T) {
+	inner, err := policy.NewEmbeddedKernel()
+	if err != nil {
+		t.Fatalf("NewEmbeddedKernel() error = %v", err)
+	}
+	kernel := &recordingKernel{inner: inner}
+	h := newActorHarness(t, harnessOptions{kernel: kernel})
+	inc := h.seedScenario()
+
+	t.Run("the body cannot lower the bar by claiming a human sent it", func(t *testing.T) {
+		// No actor headers, and the body says this was a person.
+		resp := h.evaluate("", "", evaluateBody(inc.ID, "preserve_evidence", forgedActor, false))
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body: %s)", resp.StatusCode, h.body(resp))
+		}
+		if in := kernel.last(t); !in.Request.Automated {
+			t.Error("policy input Automated = false for a request carrying no operator. " +
+				"The body chose which safety rules ran: the corroboration floor, the " +
+				"isolation rule and the risk threshold are all gated on this field.")
+		}
+	})
+
+	// And the same shown from the outside: the field is inert. Two identical
+	// requests differing only in the flag must reach the same verdict, because
+	// nothing a caller writes may select which safety rules run.
+	t.Run("flipping the flag changes no verdict", func(t *testing.T) {
+		effect := func(automated bool) string {
+			t.Helper()
+			resp := h.evaluate("", "", evaluateBody(inc.ID, "isolate_endpoint", forgedActor, automated))
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body: %s)", resp.StatusCode, h.body(resp))
+			}
+			var body struct {
+				PolicyDecision struct {
+					Effect string `json:"effect"`
+				} `json:"policy_decision"`
+			}
+			if err := json.Unmarshal([]byte(h.body(resp)), &body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			return body.PolicyDecision.Effect
+		}
+		claimedHuman, claimedAutomated := effect(false), effect(true)
+		if claimedHuman != claimedAutomated {
+			t.Errorf("effect = %q when the body claimed a human sent it and %q when it claimed "+
+				"automation; the caller is still choosing the bar it is judged against",
+				claimedHuman, claimedAutomated)
+		}
+	})
 }

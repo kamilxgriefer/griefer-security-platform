@@ -477,3 +477,76 @@ func TestSafetyContract_NothingIsEverExecuted(t *testing.T) {
 		}
 	}
 }
+
+// Case 12 — the residual T1 names, in executable form.
+//
+// docs/THREAT_MODEL.md T1 states that the corroboration gate requires two
+// independent evidence CATEGORIES, and that categories are independent of one
+// another but never of their SOURCE. This test is that sentence, run.
+//
+// Every event below is sent by one caller holding one credential, and every
+// field distinguishing them — source_type, source_name, event_type — is a string
+// in the request body that nothing verifies. Four submissions produce enough
+// distinct categories to clear the gate that exists so that "compromising a
+// single sensor is not enough to drive an action".
+//
+// This test asserts the hole is OPEN. It is written that way on purpose: a
+// limit stated only in prose is a limit nobody notices ceasing to be true, and
+// when producer authentication lands this test must fail and be rewritten as the
+// property rather than the residual. Its failure is the signal that M4's other
+// half arrived.
+//
+// See docs/adr/0005-evidence-categories.md for why the gate counts categories.
+func TestSafetyContract_OneCredentialSatisfiesTheCorroborationGate(t *testing.T) {
+	s := newStack(t, stackOptions{})
+
+	const victim = "u-5099"
+	// Three different detections for one identity, all asserted by the same
+	// caller. Nothing here is verified against anything outside the request.
+	submissions := []struct{ eventType, category, extra string }{
+		{"user_signin", "authentication", `"network":{"source_ip":"203.0.113.99","first_seen_for_actor":true}`},
+		// GRF-CORR-0003 carries no conditions at all: the event type alone is
+		// the evidence, and the event type is a string in the body.
+		{"role_assignment_changed", "privilege_escalation", ""},
+		{"secret_accessed", "credential_access", `"target":{"type":"secret","id":"kv/prod/signing-key"}`},
+	}
+
+	var incidentID string
+	for _, sub := range submissions {
+		resp, raw := s.post("/api/v1/events", eventAt(sub.eventType, sub.category, "high", victim, sub.extra))
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("%s: status = %d (%s)", sub.eventType, resp.StatusCode, raw)
+		}
+		var result api.IngestResult
+		s.decode(raw, &result)
+		if result.IncidentID != "" {
+			incidentID = result.IncidentID
+		}
+	}
+	if incidentID == "" {
+		t.Fatal("three correlated events produced no incident")
+	}
+
+	inc, err := s.store.GetIncident(context.Background(), incidentID)
+	if err != nil {
+		t.Fatalf("GetIncident() error = %v", err)
+	}
+	categories := inc.EvidenceCategories()
+	if len(categories) < 2 {
+		t.Fatalf("EvidenceCategories = %v.\n"+
+			"This test documents a residual: one credential reaching the corroboration bar. "+
+			"If the platform now stops it, that is the fix landing — rewrite this case as the "+
+			"property it protects rather than deleting it.", categories)
+	}
+
+	// And every one of them was asserted by the same unauthenticated caller.
+	// Nothing on the finding, the incident or the audit trail records WHO
+	// supplied the evidence, because there is nothing to record.
+	for _, f := range inc.Findings {
+		if f.RuleID == "" {
+			t.Fatal("a finding with no rule id")
+		}
+	}
+	t.Logf("one credential produced %d evidence categories: %v — this is T1's residual, "+
+		"and producer authentication is what closes it", len(categories), categories)
+}

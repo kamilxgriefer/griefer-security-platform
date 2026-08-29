@@ -56,9 +56,13 @@ type Finding struct {
 // maxIncidentEvidence, so deriving a security property from it would make the
 // property quietly weaken on a busy incident.
 //
-// This is NOT yet what the Policy Kernel gates on. It is carried so the binary
-// sends it before any policy requires it — a bundle that demanded a field an
-// older binary does not send would fail input validation and deny everything.
+// This IS what the Policy Kernel gates automation on (ADR 0010), which is why
+// the paragraph above is a security property and not a style note.
+//
+// The kernel reads it with a default rather than requiring it, so a bundle and
+// a binary may still be deployed in either order: an older binary omits the
+// field and the producer bar simply does not fire, instead of input validation
+// failing and denying everything.
 func (i *Incident) EvidenceProducers() []string {
 	seen := make(map[string]bool, len(i.Findings))
 	for _, f := range i.Findings {

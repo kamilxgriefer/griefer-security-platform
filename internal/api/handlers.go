@@ -573,8 +573,11 @@ func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 func writeIngestError(w http.ResponseWriter, r *http.Request, err error) {
 	body := ingestErrorBody(r, err)
 	status := http.StatusBadRequest
-	if body.Code == httpx.CodeInternal {
+	switch body.Code {
+	case httpx.CodeInternal:
 		status = http.StatusInternalServerError
+	case httpx.CodeForbidden:
+		status = http.StatusForbidden
 	}
 	httpx.WriteJSON(w, r, status, httpx.ErrorResponse{Error: *body})
 }
@@ -594,6 +597,17 @@ func ingestErrorBody(r *http.Request, err error) *httpx.ErrorBody {
 			Message:   "Event does not conform to the GRIEFER event schema.",
 			RequestID: requestID,
 			Details:   details,
+		}
+	}
+	if errors.Is(err, ErrProducerNotEntitled) {
+		// 403 rather than 400: the request is well formed and the caller
+		// authenticated. What it asked for is outside what its credential
+		// covers, and no amount of fixing the body changes that.
+		return &httpx.ErrorBody{
+			Code: httpx.CodeForbidden,
+			Message: "This producer is not entitled to the source identity the event claims. " +
+				"Widen the producer's entitlement, or correct the sensor's source_type and source_name.",
+			RequestID: requestID,
 		}
 	}
 	if errors.Is(err, events.ErrTimestampOutOfRange) {

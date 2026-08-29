@@ -487,6 +487,28 @@ approval without calling the store at all.
 
 ---
 
+## 9a. Who supplied the telemetry
+
+An `event.ingested` entry is attributed to `producer:<name>` when the deployment
+has enrolled producers, and to the system actor when it has not. The name comes
+from the verified credential, never from `source_name` in the body — that field
+is what a sender writes, and attributing a record to it would attribute
+telemetry to whoever asked to be attributed.
+
+`event.rejected` gains `error_kind: producer_source_mismatch`, recording the
+`(source_type, source_name)` a producer claimed and was not entitled to. A
+credential trying to be a second sensor is the shape of attack the entitlement
+exists to stop, so it is in the trail rather than only in a counter.
+
+A credential that is REFUSED at the door is deliberately not audited. It
+supplied no telemetry, so there is nothing for the trail to account for — and
+auditing it would let anyone holding the service credential grow an append-only
+table with a wrong header. `griefer_producer_auth_failures_total{reason}` is
+where a guessing run becomes visible, and the log line carries the claimed name
+for whoever has to find the misconfigured sensor.
+
+---
+
 ## 10a. An entry is never lost to its own content
 
 `audit.SanitiseEntry` replaces characters a PostgreSQL `TEXT` column cannot hold

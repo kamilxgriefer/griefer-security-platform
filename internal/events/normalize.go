@@ -66,6 +66,12 @@ func (n *Normalizer) Normalize(ev *SecurityEvent) (*SecurityEvent, error) {
 	// received_at is server-owned. Anything a producer supplied is discarded.
 	ev.ReceivedAt = now
 
+	// producer_id is server-owned for the same reason and a sharper one: it
+	// names WHO supplied the telemetry, so a value a producer could set would
+	// attribute an event to whoever asked to be attributed. Ingest fills it
+	// from the verified credential after this runs.
+	ev.ProducerID = ""
+
 	if ev.ID == "" {
 		ev.ID = idgen.New(idgen.PrefixEvent)
 	}

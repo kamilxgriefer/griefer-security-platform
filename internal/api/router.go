@@ -38,6 +38,10 @@ type RouterOptions struct {
 	// InternalAPIToken it makes the role gate unenforceable, and the role-gated
 	// routes are withdrawn rather than served open.
 	PublicBind bool
+	// Producers is the enrolled telemetry keyring. Empty leaves ingest
+	// authenticated only by the service credential, which is where every
+	// deployment starts.
+	Producers []httpx.ProducerCredential
 }
 
 // NewRouter builds GRIEFER's HTTP handler.
@@ -88,8 +92,20 @@ func NewRouter(svc *Service, opts RouterOptions) http.Handler {
 	write := func(route string, h http.HandlerFunc) http.Handler {
 		return httpx.Chain(svc.metrics.instrument(route, h), limiter.Middleware, httpx.RequireJSON)
 	}
-	mux.Handle("POST /api/v1/events", write("/api/v1/events", svc.handleIngestEvent))
-	mux.Handle("POST /api/v1/events/batch", write("/api/v1/events/batch", svc.handleIngestBatch))
+	// Ingest carries a third identity, so it gets its own chain.
+	//
+	// Producer verification sits INSIDE the rate limiter, which matters: mounted
+	// globally beside PrincipalMiddleware it would sit outside, and a caller
+	// holding the service credential could turn refused ingest into unbounded
+	// writes to an append-only trail — the shape of defect the evaluation path
+	// already guards against.
+	keyring := httpx.NewProducerKeyring(opts.Producers, svc.recordProducerRejection)
+	ingest := func(route string, h http.HandlerFunc) http.Handler {
+		return httpx.Chain(svc.metrics.instrument(route, keyring.Middleware(h)),
+			limiter.Middleware, httpx.RequireJSON)
+	}
+	mux.Handle("POST /api/v1/events", ingest("/api/v1/events", svc.handleIngestEvent))
+	mux.Handle("POST /api/v1/events/batch", ingest("/api/v1/events/batch", svc.handleIngestBatch))
 	mux.Handle("POST /api/v1/actions/evaluate", write("/api/v1/actions/evaluate", svc.handleEvaluateAction))
 
 	// --- Read endpoints -------------------------------------------------------

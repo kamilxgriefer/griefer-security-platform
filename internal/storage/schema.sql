@@ -82,6 +82,17 @@ CREATE TABLE IF NOT EXISTS audit_log (
     details      JSONB
 );
 
+-- producer_id names the authenticated producer that supplied the event.
+--
+-- Additive, for the reason actor_role gives below: a deployed database gains it
+-- without being rebuilt. NULL on every row written before producers existed and
+-- on every row in a deployment that has enrolled none, which reads as
+-- "unattributed" rather than as a false claim that some producer sent it.
+ALTER TABLE security_events ADD COLUMN IF NOT EXISTS producer_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_security_events_producer ON security_events (producer_id)
+    WHERE producer_id IS NOT NULL;
+
 -- actor_role records the role held at the time of the entry.
 --
 -- Added after the table shipped, so it is an additive ALTER rather than a

@@ -145,6 +145,17 @@ type SecurityEvent struct {
 	Labels        map[string]string `json:"labels,omitempty"`
 	CorrelationID string            `json:"correlation_id,omitempty"`
 
+	// ProducerID names the authenticated producer that supplied this event.
+	//
+	// Server-assigned, exactly as ReceivedAt is: Normalize zeroes whatever a
+	// sender wrote here and Ingest fills it from the verified credential. A
+	// producer id a producer could set would attribute telemetry to whoever
+	// asked to be attributed, which is the opposite of the point.
+	//
+	// Empty on an event ingested before producers were enrolled, and on every
+	// event in a deployment that has enrolled none.
+	ProducerID string `json:"producer_id,omitempty"`
+
 	// Quarantined records label keys that were stripped by the control-plane
 	// guard before the event entered the pipeline. It is populated by GRIEFER,
 	// never by a producer.

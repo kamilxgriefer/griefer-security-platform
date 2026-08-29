@@ -14,14 +14,21 @@ import (
 // so that tests can build an isolated Service without collector duplication
 // panics, and so an embedding process keeps control of its own registry.
 type Metrics struct {
-	EventsIngested    *prometheus.CounterVec
-	EventsRejected    *prometheus.CounterVec
-	IncidentsTouched  *prometheus.CounterVec
-	PolicyDecisions   *prometheus.CounterVec
-	CorrelationErrors prometheus.Counter
-	BusErrors         prometheus.Counter
-	RequestsTotal     *prometheus.CounterVec
-	RequestDuration   *prometheus.HistogramVec
+	EventsIngested *prometheus.CounterVec
+	EventsRejected *prometheus.CounterVec
+	// ProducerAuthFailures counts refused producer credentials.
+	//
+	// A refusal is deliberately NOT audited — a credential that never got past
+	// the door supplied no telemetry, and auditing it would let anyone holding
+	// the service credential grow an append-only table with a wrong header. This
+	// counter is where a credential-guessing run becomes visible instead.
+	ProducerAuthFailures *prometheus.CounterVec
+	IncidentsTouched     *prometheus.CounterVec
+	PolicyDecisions      *prometheus.CounterVec
+	CorrelationErrors    prometheus.Counter
+	BusErrors            prometheus.Counter
+	RequestsTotal        *prometheus.CounterVec
+	RequestDuration      *prometheus.HistogramVec
 }
 
 // NewMetrics registers GRIEFER's collectors on reg.
@@ -34,6 +41,10 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		EventsRejected: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "griefer_events_rejected_total",
 			Help: "Security events rejected at the ingest trust boundary, by reason.",
+		}, []string{"reason"}),
+		ProducerAuthFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "griefer_producer_auth_failures_total",
+			Help: "Producer credentials refused at the ingest boundary, by reason.",
 		}, []string{"reason"}),
 		IncidentsTouched: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "griefer_incidents_total",
@@ -62,7 +73,8 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		}, []string{"method", "route"}),
 	}
 	reg.MustRegister(
-		m.EventsIngested, m.EventsRejected, m.IncidentsTouched, m.PolicyDecisions,
+		m.EventsIngested, m.EventsRejected, m.ProducerAuthFailures,
+		m.IncidentsTouched, m.PolicyDecisions,
 		m.CorrelationErrors, m.BusErrors, m.RequestsTotal, m.RequestDuration,
 	)
 	return m

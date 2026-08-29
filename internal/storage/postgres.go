@@ -124,13 +124,13 @@ func (s *PostgresStore) SaveEvent(ctx context.Context, ev *events.SecurityEvent)
 	const q = `
 		INSERT INTO security_events (
 			id, schema_version, occurred_at, received_at, source_type, source_name,
-			event_type, category, severity, actor_key, correlation_id, document
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+			event_type, category, severity, actor_key, correlation_id, document, producer_id
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		ON CONFLICT (id) DO NOTHING`
 	tag, err := s.pool.Exec(ctx, q,
 		ev.ID, ev.SchemaVersion, ev.Timestamp, ev.ReceivedAt, ev.SourceType, ev.SourceName,
 		ev.EventType, string(ev.Category), string(ev.Severity), nullable(ev.ActorKey()),
-		nullable(ev.CorrelationID), doc)
+		nullable(ev.CorrelationID), doc, nullable(ev.ProducerID))
 	if err != nil {
 		return false, fmt.Errorf("storage: insert event: %w", err)
 	}

@@ -63,8 +63,13 @@
       "maxLength": 96,
       "pattern": "^[a-z0-9_]+$"
     },
+    "producer_id": {
+      "description": "Assigned by GRIEFER from the authenticated producer credential. Any submitted value is discarded, because a producer able to set it could attribute telemetry to whoever it liked.",
+      "type": "string",
+      "maxLength": 64
+    },
     "category": {
-      "description": "Evidence category. Correlation treats these as independent evidence classes; the Policy Kernel counts DISTINCT categories when deciding whether automation is permitted.",
+      "description": "Evidence category of the EVENT, carried for narrative and display. It is NOT what the Policy Kernel counts: the corroboration gate counts the distinct categories DECLARED BY THE RULES that fired (see detections/correlation/), and no shipped rule matches on this field.",
       "type": "string",
       "enum": [
         "authentication",

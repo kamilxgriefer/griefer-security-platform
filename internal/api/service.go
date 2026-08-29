@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -31,6 +32,15 @@ type Correlator interface {
 
 // ErrIncidentNotFound is returned when an action references an unknown incident.
 var ErrIncidentNotFound = errors.New("incident not found")
+
+// ErrProducerNotEntitled is returned when an authenticated producer submits an
+// event claiming a source identity its credential does not cover.
+//
+// A distinct error because it is a distinct answer: the caller authenticated
+// correctly and asked for something its credential does not permit, which an
+// operator fixes by widening the entitlement or by fixing the sensor's
+// configuration — not by presenting a different key.
+var ErrProducerNotEntitled = errors.New("producer is not entitled to this source identity")
 
 // Service holds GRIEFER's application logic.
 type Service struct {
@@ -149,11 +159,25 @@ type IngestResult struct {
 func (s *Service) Ingest(ctx context.Context, raw []byte) (IngestResult, error) {
 	requestID := httpx.RequestIDFromContext(ctx)
 
+	// Telemetry is attributed to the CREDENTIAL that supplied it, not to the
+	// source name inside the body. Empty when no producer is enrolled, in which
+	// case Prepare stamps the system actor exactly as before.
+	producer := httpx.ProducerFromContext(ctx)
+	ingestActor := ""
+	ingestRole := ""
+	if !producer.Zero() {
+		ingestActor = "producer:" + producer.Name
+		// A label on the entry, not a Principal role. A producer never
+		// satisfies RequireRole; see internal/httpx/producer.go.
+		ingestRole = "producer"
+	}
+
 	ev, err := s.validator.Decode(raw)
 	if err != nil {
 		s.metrics.EventsRejected.WithLabelValues("schema").Inc()
 		s.recordAudit(ctx, audit.Entry{
 			Action: audit.ActionEventRejected, SubjectType: audit.SubjectEvent,
+			Actor: ingestActor, ActorRole: ingestRole,
 			Outcome: audit.OutcomeDenied, RequestID: requestID,
 			Reason:  "event failed schema validation at the ingest trust boundary",
 			Details: map[string]any{"error_kind": "schema_validation"},
@@ -165,11 +189,40 @@ func (s *Service) Ingest(ctx context.Context, raw []byte) (IngestResult, error) 
 		s.metrics.EventsRejected.WithLabelValues("normalization").Inc()
 		s.recordAudit(ctx, audit.Entry{
 			Action: audit.ActionEventRejected, SubjectType: audit.SubjectEvent,
-			SubjectID: ev.ID, Outcome: audit.OutcomeDenied, RequestID: requestID,
+			SubjectID: ev.ID, Actor: ingestActor, ActorRole: ingestRole,
+			Outcome: audit.OutcomeDenied, RequestID: requestID,
 			Reason:  err.Error(),
 			Details: map[string]any{"error_kind": "normalization"},
 		})
 		return IngestResult{}, err
+	}
+
+	// The entitlement check, after normalisation so it sees the values the
+	// platform will actually store, and before SaveEvent so a refused claim
+	// never becomes evidence.
+	//
+	// This is the control that closes T1's hole. The credential proves who is
+	// sending; the entitlement is what stops one credential claiming to be
+	// several sensors, which is what the corroboration gate rests on.
+	if !producer.Zero() {
+		if !producer.Entitled(ev.SourceType, ev.SourceName) {
+			s.metrics.EventsRejected.WithLabelValues("producer_source_mismatch").Inc()
+			s.recordAudit(ctx, audit.Entry{
+				Action: audit.ActionEventRejected, SubjectType: audit.SubjectEvent,
+				SubjectID: ev.ID, Actor: ingestActor, ActorRole: ingestRole,
+				Outcome: audit.OutcomeDenied, RequestID: requestID,
+				Reason: "producer is not entitled to the source identity this event claims",
+				Details: map[string]any{
+					"error_kind":            "producer_source_mismatch",
+					"claimed_source_type":   ev.SourceType,
+					"claimed_source_name":   ev.SourceName,
+					"entitled_source_count": len(producer.Sources),
+				},
+			})
+			return IngestResult{}, fmt.Errorf("%w: producer %q may not claim source %q/%q",
+				ErrProducerNotEntitled, producer.Name, ev.SourceType, ev.SourceName)
+		}
+		ev.ProducerID = producer.Name
 	}
 
 	result := IngestResult{EventID: ev.ID, Quarantined: ev.Quarantined}
@@ -229,7 +282,8 @@ func (s *Service) Ingest(ctx context.Context, raw []byte) (IngestResult, error) 
 		// itself a signal worth keeping.
 		s.recordAudit(ctx, audit.Entry{
 			Action: audit.ActionEventQuarantined, SubjectType: audit.SubjectEvent,
-			SubjectID: ev.ID, Outcome: audit.OutcomeDenied, RequestID: requestID,
+			SubjectID: ev.ID, Actor: ingestActor, ActorRole: ingestRole,
+			Outcome: audit.OutcomeDenied, RequestID: requestID,
 			Reason:  "telemetry contained reserved control-plane label keys; they were stripped before processing",
 			Details: map[string]any{"quarantined_keys": ev.Quarantined, "source_name": ev.SourceName},
 		})
@@ -286,7 +340,8 @@ func (s *Service) Ingest(ctx context.Context, raw []byte) (IngestResult, error) 
 
 	s.recordAudit(ctx, audit.Entry{
 		Action: audit.ActionEventIngested, SubjectType: audit.SubjectEvent,
-		SubjectID: ev.ID, Outcome: audit.OutcomeSuccess, RequestID: requestID,
+		SubjectID: ev.ID, Actor: ingestActor, ActorRole: ingestRole,
+		Outcome: audit.OutcomeSuccess, RequestID: requestID,
 		Reason: fmt.Sprintf("event accepted from %s/%s", ev.SourceType, ev.SourceName),
 		Details: map[string]any{
 			"category": string(ev.Category), "severity": string(ev.Severity),
@@ -802,4 +857,24 @@ func boolLabel(b bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// recordProducerRejection notes a refused producer credential.
+//
+// Passed to the keyring as a callback so internal/httpx keeps no dependency on
+// the audit package — the shape AccessLog already uses for its logger.
+//
+// A refusal is counted and logged, and it is NOT written to the audit trail.
+// The trail records what GRIEFER did about telemetry it accepted; a credential
+// that never got past the door supplied none, and an attacker holding the
+// service credential could otherwise turn a wrong header into unbounded growth
+// of an append-only table. The counter is where a credential-guessing run
+// becomes visible, and the log line carries the claimed name for the operator
+// who has to find the misconfigured sensor.
+func (s *Service) recordProducerRejection(r *http.Request, claimed, reason string) {
+	s.metrics.ProducerAuthFailures.WithLabelValues(reason).Inc()
+	s.logger.WarnContext(r.Context(), "producer credential refused",
+		slog.String("request_id", httpx.RequestIDFromContext(r.Context())),
+		slog.String("claimed_producer", claimed),
+		slog.String("reason", reason))
 }

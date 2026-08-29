@@ -124,7 +124,14 @@ milestone does not close on a half — see
       automated half, under an authority separate from the database, does not
       exist. See [ADR 0008](adr/0008-operator-held-audit-anchors.md)
 - [x] `GET /api/v1/audit/verify` returning the first broken link
-- [ ] Producer authentication (mTLS or signed tokens), closing **T1**
+- [x] Producer authentication, closing the *unauthenticated ingest* half of
+      **T1**: a per-producer credential bound to an exact
+      `(source_type, source_name)` entitlement. Neither mTLS nor signed tokens —
+      both were considered and the reasons are in
+      [ADR 0009](adr/0009-authenticated-event-producers.md)
+- [ ] Make the corroboration gate count distinct producers. This is what T1's
+      headline claim needs and authentication alone does not deliver: one
+      entitled producer still reaches the two-category bar
 
 **Done when:** GRIEFER correlates real Entra ID telemetry from a lab tenant, and
 `audit/verify` detects a row deleted directly in PostgreSQL.

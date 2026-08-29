@@ -64,17 +64,43 @@ incident against a colleague, or steer GRIEFER's conclusions.
   and not against a single credential. Closing that is producer authentication.
 - Per-client rate limiting bounds how much a producer can inject.
 
+- **Producers authenticate and are bound to a source identity.** A sensor
+  presents its own credential beside the service credential, and that credential
+  is entitled to specific `(source_type, source_name)` pairs, matched exactly.
+  An event claiming a pair its producer does not hold is refused after
+  normalisation and before storage, and the refusal is audited with what was
+  claimed. Accepted telemetry is attributed to `producer:<name>` rather than to
+  the system actor, so the trail records which credential supplied it. See
+  [ADR 0009](adr/0009-authenticated-event-producers.md).
+
 *Not mitigated*
 
-- **No producer authentication.** Anyone who can reach the API can submit events.
-  → M4 (mTLS or signed producer tokens).
+- **The corroboration gate still counts independent CATEGORY and never
+  independent SOURCE.** Authentication changed who may send and what they may
+  claim to be; it did not change what the gate counts. One *entitled* producer
+  posting four schema-valid events for one identity still reaches three evidence
+  categories and still clears the risk floor, which
+  `TestSafetyContract_OneCredentialSatisfiesTheCorroborationGate` asserts.
+  Making the gate count distinct producers is a separate decision with its own
+  record, because it changes what GRIEFER may do without a human. → M4
+- **Distinct credentials are not independent compromise.** Two keys in one CI
+  secret store, on one collector host or in one deployment manifest count as
+  two, and the Security Graph has no producer entity, so nothing can place them
+  behind a shared root. Even after the gate counts producers, the honest phrase
+  is "two distinct producer credentials", never "two independent sensors".
+- **Revocation is a redeploy.** Configuration is read once at startup and there
+  is no signal handler that re-reads it. Rotation has a two-key window; removing
+  a key does not.
 - **No cross-source verification.** GRIEFER cannot yet ask a second source
   whether a claimed sign-in really happened.
 
-*Residual.* An attacker with network reach to the API can inject events today.
-The corroboration requirement limits the damage to *noise and misdirection*
-rather than *automated action against a target of their choosing* — which is why
-that rule exists before authentication does.
+*Residual.* Reduced and not removed. An attacker now needs a producer
+credential rather than network reach and the shared token, and can only claim
+the source pairs that credential was entitled to. What has not changed is that
+one credential still satisfies the corroboration gate, so the limit on the
+damage is still the absence of an actuator (ADR 0004) rather than the
+corroboration rule. Anyone reading the producer-authentication change and
+concluding the gate is fixed has been misled.
 
 ## T2 — Sensor suppression
 

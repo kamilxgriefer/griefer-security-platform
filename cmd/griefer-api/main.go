@@ -31,6 +31,7 @@ import (
 	"github.com/kamilxgriefer/griefer-security-platform/internal/demo"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/events"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/graph"
+	"github.com/kamilxgriefer/griefer-security-platform/internal/httpx"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/policy"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/storage"
 )
@@ -215,6 +216,7 @@ func run() error {
 		RateLimitRPS: cfg.HTTP.RateLimitRPS, RateLimitBurst: cfg.HTTP.RateLimitBurst,
 		Logger: logger, InternalAPIToken: cfg.Auth.InternalAPIToken,
 		PublicBind: publicBind(cfg.HTTP.Addr),
+		Producers:  producerCredentials(cfg.Producers),
 	})
 
 	server := &http.Server{
@@ -516,4 +518,20 @@ func publicBind(addr string) bool {
 		return true
 	}
 	return config.IsPublicBind(host)
+}
+
+// producerCredentials converts the configured keyring into the form the HTTP
+// layer verifies against.
+//
+// A conversion rather than a shared type, so internal/httpx does not import
+// internal/config: the middleware has to be constructible in a test from three
+// literals, without an environment.
+func producerCredentials(producers []config.Producer) []httpx.ProducerCredential {
+	out := make([]httpx.ProducerCredential, 0, len(producers))
+	for _, p := range producers {
+		out = append(out, httpx.ProducerCredential{
+			Name: p.Name, Key: p.Key, PreviousKey: p.PreviousKey, Sources: p.Sources,
+		})
+	}
+	return out
 }

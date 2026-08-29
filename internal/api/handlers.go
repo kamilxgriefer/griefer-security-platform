@@ -599,6 +599,15 @@ func ingestErrorBody(r *http.Request, err error) *httpx.ErrorBody {
 			Details:   details,
 		}
 	}
+	if errors.Is(err, ErrProducerIDCollision) {
+		return &httpx.ErrorBody{
+			Code: httpx.CodeValidationFailed,
+			Message: "An event with this id was already supplied by a different producer. " +
+				"Event ids must be unique across producers; prefix them with the producer name " +
+				"if the upstream system's identifiers can collide.",
+			RequestID: requestID,
+		}
+	}
 	if errors.Is(err, ErrProducerNotEntitled) {
 		// 403 rather than 400: the request is well formed and the caller
 		// authenticated. What it asked for is outside what its credential

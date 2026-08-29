@@ -42,6 +42,15 @@ var ErrIncidentNotFound = errors.New("incident not found")
 // configuration — not by presenting a different key.
 var ErrProducerNotEntitled = errors.New("producer is not entitled to this source identity")
 
+// ErrProducerIDCollision is returned when a producer submits an event id that
+// another producer already holds.
+//
+// Distinct from a retry, which is silent and expected. A producer reaching for
+// another's identifiers is either a misconfiguration serious enough to lose
+// telemetry or an attempt to make a neighbour's evidence disappear, and both
+// need an operator rather than a counter.
+var ErrProducerIDCollision = errors.New("event id is already held by another producer")
+
 // Service holds GRIEFER's application logic.
 type Service struct {
 	store      storage.Store
@@ -227,7 +236,7 @@ func (s *Service) Ingest(ctx context.Context, raw []byte) (IngestResult, error) 
 
 	result := IngestResult{EventID: ev.ID, Quarantined: ev.Quarantined}
 
-	stored, err := s.store.SaveEvent(ctx, ev)
+	saved, err := s.store.SaveEvent(ctx, ev)
 	if err != nil {
 		s.metrics.EventsRejected.WithLabelValues("storage").Inc()
 		s.logger.ErrorContext(ctx, "failed to persist event",
@@ -258,7 +267,34 @@ func (s *Service) Ingest(ctx context.Context, raw []byte) (IngestResult, error) 
 		})
 		return IngestResult{}, fmt.Errorf("persist event: %w", err)
 	}
-	if !stored {
+	if !saved.Stored {
+		// A repeat from a DIFFERENT producer is not a retry.
+		//
+		// Event ids are producer-supplied, and a real connector derives them
+		// from the upstream system, so a neighbour's ids are predictable. A
+		// producer that pre-registers an id its neighbour will later use makes
+		// that neighbour's genuine event disappear as a duplicate — evidence
+		// suppression from inside the trust boundary, silent unless the two
+		// cases are told apart.
+		//
+		// Refused rather than counted, because unlike a retry there is nothing
+		// legitimate this could be, and audited because the trail is where a
+		// producer reaching for another's identifiers has to show up.
+		if !producer.Zero() && saved.ExistingProducerID != "" && saved.ExistingProducerID != producer.Name {
+			s.metrics.EventsRejected.WithLabelValues("producer_id_collision").Inc()
+			s.recordAudit(ctx, audit.Entry{
+				Action: audit.ActionEventRejected, SubjectType: audit.SubjectEvent,
+				SubjectID: ev.ID, Actor: ingestActor, ActorRole: ingestRole,
+				Outcome: audit.OutcomeDenied, RequestID: requestID,
+				Reason: "an event with this id was already supplied by a different producer",
+				Details: map[string]any{
+					"error_kind":       "producer_id_collision",
+					"holding_producer": saved.ExistingProducerID,
+				},
+			})
+			return IngestResult{}, fmt.Errorf("%w: event id %q is already held by producer %q",
+				ErrProducerIDCollision, ev.ID, saved.ExistingProducerID)
+		}
 		// Already ingested under this id. Ingestion is documented as idempotent
 		// on event id, and it was — in the database. Everything after this line
 		// ran again anyway: the graph took the projection a second time, the bus
@@ -584,7 +620,11 @@ func (s *Service) EvaluateAction(ctx context.Context, req EvaluateRequest) (*inc
 			Confidence:         inc.Confidence,
 			Severity:           string(inc.Severity),
 			EvidenceCategories: categoryStrings(inc.EvidenceCategories()),
-			FindingCount:       len(inc.Findings),
+			// Allocated non-nil so it marshals as [] rather than null: a Rego
+			// is_array check on null fails, and the failure would arrive as a
+			// deny on every action the day a bundle starts reading this.
+			EvidenceProducers: append(make([]string, 0), inc.EvidenceProducers()...),
+			FindingCount:      len(inc.Findings),
 		},
 		Request: policy.RequestInput{
 			// Automated is DERIVED, and the body has no vote in either

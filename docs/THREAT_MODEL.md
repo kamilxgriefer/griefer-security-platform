@@ -72,6 +72,11 @@ incident against a colleague, or steer GRIEFER's conclusions.
   claimed. Accepted telemetry is attributed to `producer:<name>` rather than to
   the system actor, so the trail records which credential supplied it. See
   [ADR 0009](adr/0009-authenticated-event-producers.md).
+- **A producer cannot suppress another's evidence by taking its event id.**
+  Ingest is idempotent on a producer-supplied id, and a real connector derives
+  that id from the upstream system, so a neighbour's are predictable. A repeat
+  from a different producer is refused and audited rather than silently
+  discarded; a repeat from the holder is still a retry.
 
 *Not mitigated*
 

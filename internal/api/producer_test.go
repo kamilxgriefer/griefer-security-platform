@@ -12,6 +12,7 @@ import (
 	"github.com/kamilxgriefer/griefer-security-platform/internal/api"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/audit"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/httpx"
+	"github.com/kamilxgriefer/griefer-security-platform/internal/incidents"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/storage"
 )
 
@@ -199,5 +200,105 @@ func TestARefusedCredentialIsCountedAndNotAudited(t *testing.T) {
 	}
 	if after := len(h.audit(t)); after != before {
 		t.Errorf("the trail grew from %d to %d entries on refused credentials", before, after)
+	}
+}
+
+// TestOneProducerCannotSuppressAnothersEventByTakingItsId.
+//
+// Event ids are producer-supplied, and a real connector derives them from the
+// upstream system — an Okta connector uses Okta's event id — so a neighbour's
+// ids are predictable. Dedup used to discard any repeat silently, so a producer
+// that pre-registered an id its neighbour would later use made that neighbour's
+// genuine event vanish. Evidence suppression from inside the trust boundary,
+// with no trace at all.
+//
+// A retry from the SAME producer stays silent, because that is what a retry is.
+func TestOneProducerCannotSuppressAnothersEventByTakingItsId(t *testing.T) {
+	h := newProducerHarness(t)
+
+	post := func(producer, key, id string) *http.Response {
+		t.Helper()
+		body := `{"id":"` + id + `","schema_version":"0.1","timestamp":"2026-08-27T18:00:00Z",` +
+			`"source_type":"identity_provider","source_name":"okta-prod",` +
+			`"event_type":"user_signin","category":"authentication","severity":"high",` +
+			`"actor":{"type":"identity","id":"victim@lab.example"}}`
+		if producer == "edr-fleet" {
+			body = strings.ReplaceAll(body, "identity_provider", "endpoint_agent")
+			body = strings.ReplaceAll(body, `"source_name":"okta-prod"`, `"source_name":"edr-fleet"`)
+			body = strings.ReplaceAll(body, "user_signin", "process_started")
+			body = strings.ReplaceAll(body, "authentication", "process_execution")
+		}
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+			h.server.URL+"/api/v1/events", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+prodToken)
+		req.Header.Set(httpx.HeaderProducer, producer)
+		req.Header.Set(httpx.HeaderProducerKey, key)
+		resp, err := h.server.Client().Do(req)
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		t.Cleanup(func() { _ = resp.Body.Close() })
+		return resp
+	}
+
+	const contested = "okta-evt-00012345"
+
+	// The squatter gets there first.
+	if resp := post("edr-fleet", edrKey, contested); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("first submission: status = %d, want 202", resp.StatusCode)
+	}
+	// The genuine sensor's event must not simply vanish.
+	resp := post("okta-prod", oktaKey, contested)
+	if resp.StatusCode == http.StatusAccepted {
+		t.Fatal("the second producer's event was silently accepted as a duplicate; " +
+			"one producer can make another's evidence disappear")
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 naming the collision", resp.StatusCode)
+	}
+
+	var collisions int
+	for _, e := range h.audit(t) {
+		if kind, _ := e.Details["error_kind"].(string); kind == "producer_id_collision" {
+			collisions++
+			if e.Details["holding_producer"] != "edr-fleet" {
+				t.Errorf("the refusal does not name who holds the id: %v", e.Details)
+			}
+		}
+	}
+	if collisions != 1 {
+		t.Errorf("audited collisions = %d, want 1", collisions)
+	}
+
+	// And the holder's own retry is still a retry.
+	if resp := post("edr-fleet", edrKey, contested); resp.StatusCode != http.StatusAccepted {
+		t.Errorf("the holder's retry: status = %d, want 202 — a retry is not a collision",
+			resp.StatusCode)
+	}
+}
+
+// TestEvidenceProducersIsDerivedFromFindings.
+//
+// Carried now and gated on later: the binary must SEND evidence_producers
+// before any bundle requires it, because a policy demanding a field an older
+// binary omits fails input validation and this policy's default is deny.
+func TestEvidenceProducersIsDerivedFromFindings(t *testing.T) {
+	inc := &incidents.Incident{Findings: []incidents.Finding{
+		{RuleID: "GRF-CORR-0001", ProducerIDs: []string{"okta-prod"}},
+		{RuleID: "GRF-CORR-0002", ProducerIDs: []string{"edr-fleet", "okta-prod"}},
+		{RuleID: "GRF-CORR-0003"},
+	}}
+	got := inc.EvidenceProducers()
+	if len(got) != 2 || got[0] != "edr-fleet" || got[1] != "okta-prod" {
+		t.Errorf("EvidenceProducers() = %v, want the distinct set, sorted", got)
+	}
+	// An unattributed incident is not one anonymous producer.
+	empty := &incidents.Incident{Findings: []incidents.Finding{{RuleID: "GRF-CORR-0001"}}}
+	if got := empty.EvidenceProducers(); len(got) != 0 {
+		t.Errorf("EvidenceProducers() = %v on an unattributed incident, want empty", got)
 	}
 }

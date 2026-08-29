@@ -33,6 +33,11 @@ const (
 	// shape CONTRIBUTING.md is describing when it says an unbounded list an
 	// outside party can influence is a limit that does not exist.
 	maxFindingEntities = 100
+	// maxFindingProducers bounds the producers retained per finding. A
+	// deployment enrols at most MaxProducers, so this can only be reached by a
+	// configuration far outside that — and an unbounded list here would be the
+	// same defect EntityIDs was.
+	maxFindingProducers = 32
 )
 
 // IncidentStore is the persistence surface the engine needs. Declaring it here
@@ -204,6 +209,7 @@ func (e *Engine) evaluate(ev *events.SecurityEvent, subject string) []incidents.
 			Title:       rule.Title,
 			Description: rule.Description,
 			Category:    rule.Category,
+			ProducerIDs: producerIDs(ev),
 			Severity:    rule.Severity,
 			Confidence:  rule.Confidence,
 			Techniques:  rule.Techniques,
@@ -360,6 +366,14 @@ func mergeFinding(inc *incidents.Incident, f incidents.Finding) {
 			}
 			if !containsStr(existing.EntityIDs, id) {
 				existing.EntityIDs = append(existing.EntityIDs, id)
+			}
+		}
+		for _, id := range f.ProducerIDs {
+			if len(existing.ProducerIDs) >= maxFindingProducers {
+				break
+			}
+			if !containsStr(existing.ProducerIDs, id) {
+				existing.ProducerIDs = append(existing.ProducerIDs, id)
 			}
 		}
 		return
@@ -545,4 +559,18 @@ func containsStr(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// producerIDs returns the authenticated producer of an event, as a set of at
+// most one.
+//
+// A slice rather than a string because findings merge, and a finding that fired
+// on events from two sensors is the case the corroboration question is
+// eventually about. Empty for an event with no producer attribution, which must
+// stay distinguishable from one anonymous producer.
+func producerIDs(ev *events.SecurityEvent) []string {
+	if ev == nil || ev.ProducerID == "" {
+		return nil
+	}
+	return []string{ev.ProducerID}
 }

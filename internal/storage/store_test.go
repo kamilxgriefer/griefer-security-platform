@@ -78,20 +78,20 @@ func testEvents(t *testing.T, store storage.Store) {
 		Actor:  &events.Actor{Type: "identity", ID: "u-1"},
 		Labels: map[string]string{"outcome": "success"},
 	}
-	stored, err := store.SaveEvent(ctx, ev)
+	saved, err := store.SaveEvent(ctx, ev)
 	if err != nil {
 		t.Fatalf("SaveEvent() error = %v", err)
 	}
-	if !stored {
+	if !saved.Stored {
 		t.Fatal("SaveEvent() reported a new event as already present")
 	}
 	// Producers retry; a retry storm must not become an error storm — and the
 	// caller has to be able to tell, or it processes the retry as evidence.
-	stored, err = store.SaveEvent(ctx, ev)
+	saved, err = store.SaveEvent(ctx, ev)
 	if err != nil {
 		t.Fatalf("SaveEvent() is not idempotent: %v", err)
 	}
-	if stored {
+	if saved.Stored {
 		t.Error("SaveEvent() reported a repeat as newly stored; the caller would " +
 			"correlate, project and publish it a second time")
 	}

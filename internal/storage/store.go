@@ -16,6 +16,17 @@ import (
 	"github.com/kamilxgriefer/griefer-security-platform/internal/incidents"
 )
 
+// EventSaveResult reports what SaveEvent did.
+type EventSaveResult struct {
+	// Stored is false when an event with this id was already present.
+	Stored bool
+	// ExistingProducerID names the producer credited with the row already
+	// present. Empty when Stored is true, and empty for a row written before
+	// producers were enrolled — which reads as "unattributed", not as "the same
+	// producer".
+	ExistingProducerID string
+}
+
 // ErrNotFound is returned when a requested record does not exist.
 var ErrNotFound = errors.New("record not found")
 
@@ -66,15 +77,23 @@ func ClampLimit(limit int) int {
 type Store interface {
 	audit.Sink
 
-	// SaveEvent persists an event and reports whether it was NEW.
+	// SaveEvent persists an event and reports what happened to it.
 	//
-	// The bool is the whole reason this does not just return an error.
-	// Ingestion is idempotent on event id, and both stores implemented that by
+	// It returns a result rather than an error alone because ingestion is
+	// idempotent on event id, and both stores used to implement that by
 	// discarding a repeat and returning nil — so the caller could not tell a
 	// stored event from a discarded one and carried on correlating either way.
 	// Re-POSTing one event id therefore fired threshold rules on evidence the
 	// database does not hold.
-	SaveEvent(ctx context.Context, ev *events.SecurityEvent) (stored bool, err error)
+	//
+	// The result also names the producer that stored the row already present,
+	// because a repeat from a DIFFERENT producer is not a retry. Event ids are
+	// producer-supplied and a real connector derives them from the upstream
+	// system, so they are predictable — and a producer that pre-registers an id
+	// its neighbour will later use makes that neighbour's genuine event vanish
+	// as a duplicate. Evidence suppression, from inside the trust boundary,
+	// with no trace unless the two are told apart.
+	SaveEvent(ctx context.Context, ev *events.SecurityEvent) (EventSaveResult, error)
 	ListEvents(ctx context.Context, limit, offset int) ([]*events.SecurityEvent, int, error)
 	CountEvents(ctx context.Context) (int, error)
 

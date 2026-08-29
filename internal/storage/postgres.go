@@ -113,13 +113,13 @@ func (s *PostgresStore) Close() error {
 // SaveEvent implements Store. Re-ingesting an event with a known id is
 // idempotent rather than an error: producers retry, and a retry storm must not
 // turn into an error storm.
-func (s *PostgresStore) SaveEvent(ctx context.Context, ev *events.SecurityEvent) (bool, error) {
+func (s *PostgresStore) SaveEvent(ctx context.Context, ev *events.SecurityEvent) (EventSaveResult, error) {
 	if ev == nil || ev.ID == "" {
-		return false, fmt.Errorf("storage: event requires an id")
+		return EventSaveResult{}, fmt.Errorf("storage: event requires an id")
 	}
 	doc, err := json.Marshal(ev)
 	if err != nil {
-		return false, fmt.Errorf("storage: encode event: %w", err)
+		return EventSaveResult{}, fmt.Errorf("storage: encode event: %w", err)
 	}
 	const q = `
 		INSERT INTO security_events (
@@ -132,11 +132,23 @@ func (s *PostgresStore) SaveEvent(ctx context.Context, ev *events.SecurityEvent)
 		ev.EventType, string(ev.Category), string(ev.Severity), nullable(ev.ActorKey()),
 		nullable(ev.CorrelationID), doc, nullable(ev.ProducerID))
 	if err != nil {
-		return false, fmt.Errorf("storage: insert event: %w", err)
+		return EventSaveResult{}, fmt.Errorf("storage: insert event: %w", err)
 	}
 	// ON CONFLICT DO NOTHING affects no rows on a repeat, which is how the
 	// caller learns that this event was already here.
-	return tag.RowsAffected() > 0, nil
+	if tag.RowsAffected() > 0 {
+		return EventSaveResult{Stored: true}, nil
+	}
+	var existing *string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT producer_id FROM security_events WHERE id = $1`, ev.ID).Scan(&existing); err != nil {
+		return EventSaveResult{}, fmt.Errorf("storage: read the producer of an existing event: %w", err)
+	}
+	out := EventSaveResult{}
+	if existing != nil {
+		out.ExistingProducerID = *existing
+	}
+	return out, nil
 }
 
 // ListEvents implements Store, newest first.

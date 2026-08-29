@@ -25,7 +25,10 @@ type MemoryStore struct {
 	events []*events.SecurityEvent
 	// eventIDs mirrors the ids currently held so that re-ingesting a known
 	// event is a no-op, matching the PostgreSQL store's ON CONFLICT DO NOTHING.
-	eventIDs  map[string]struct{}
+	// eventIDs maps a stored event id to the producer credited with it, so a
+	// repeat from a DIFFERENT producer can be told apart from a retry. Empty
+	// value means the row was written with no producer attribution.
+	eventIDs  map[string]string
 	incidents map[string]*incidents.Incident
 	// incidentOrder preserves first-creation order so listings are stable when
 	// several incidents share a timestamp.
@@ -69,7 +72,7 @@ func NewMemoryStore(maxEvents int) *MemoryStore {
 		maxEvents = 10000
 	}
 	return &MemoryStore{
-		eventIDs:   make(map[string]struct{}),
+		eventIDs:   make(map[string]string),
 		incidents:  make(map[string]*incidents.Incident),
 		actions:    make(map[string]*incidents.ResponseAction),
 		maxEvents:  maxEvents,
@@ -92,20 +95,22 @@ func (s *MemoryStore) Ping(context.Context) error { return nil }
 func (s *MemoryStore) Close() error { return nil }
 
 // SaveEvent implements Store.
-func (s *MemoryStore) SaveEvent(_ context.Context, ev *events.SecurityEvent) (bool, error) {
+func (s *MemoryStore) SaveEvent(_ context.Context, ev *events.SecurityEvent) (EventSaveResult, error) {
 	if ev == nil || ev.ID == "" {
-		return false, fmt.Errorf("storage: event requires an id")
+		return EventSaveResult{}, fmt.Errorf("storage: event requires an id")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.eventIDs[ev.ID]; exists {
+	if existing, exists := s.eventIDs[ev.ID]; exists {
 		// Producers retry. A retry storm must not become a duplicate storm —
-		// and false tells the caller not to process it a second time either.
-		return false, nil
+		// and Stored:false tells the caller not to process it a second time
+		// either. The producer of the stored row goes back with it, so a repeat
+		// from somebody else can be told apart from a retry.
+		return EventSaveResult{ExistingProducerID: existing}, nil
 	}
 	clone := *ev
 	s.events = append(s.events, &clone)
-	s.eventIDs[ev.ID] = struct{}{}
+	s.eventIDs[ev.ID] = ev.ProducerID
 	if len(s.events) > s.maxEvents {
 		dropped := s.events[:len(s.events)-s.maxEvents]
 		for _, old := range dropped {
@@ -113,7 +118,7 @@ func (s *MemoryStore) SaveEvent(_ context.Context, ev *events.SecurityEvent) (bo
 		}
 		s.events = s.events[len(s.events)-s.maxEvents:]
 	}
-	return true, nil
+	return EventSaveResult{Stored: true}, nil
 }
 
 // ListEvents implements Store, returning newest first.

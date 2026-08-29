@@ -53,7 +53,15 @@ type IncidentInput struct {
 	Confidence         float64  `json:"confidence"`
 	Severity           string   `json:"severity"`
 	EvidenceCategories []string `json:"evidence_categories"`
-	FindingCount       int      `json:"finding_count"`
+	// EvidenceProducers names the distinct authenticated producers behind the
+	// evidence.
+	//
+	// Sent before any policy requires it, deliberately. A bundle that demanded
+	// a field an older binary does not send would fail input_complete, and this
+	// policy's default is deny — so the deployment order is: binary first,
+	// confirm, then the bundle. Never the reverse.
+	EvidenceProducers []string `json:"evidence_producers"`
+	FindingCount      int      `json:"finding_count"`
 }
 
 // RequestInput describes who is asking.
@@ -147,8 +155,13 @@ func (r rawDecision) toDecision(engine string, at time.Time) (incidents.PolicyDe
 		Reasons:       r.Reasons,
 		PolicyPackage: pkg,
 		PolicyVersion: version,
-		EvaluatedAt:   at.UTC(),
-		FailClosed:    false,
-		Engine:        engine,
+		// The count the policy itself reported. It was decoded and then dropped,
+		// so the audit trail recorded a verdict without the number the verdict
+		// turned on — and a reader could not tell a two-category allow from a
+		// five-category one.
+		EvidenceCategoryCount: r.EvidenceCategoryCount,
+		EvaluatedAt:           at.UTC(),
+		FailClosed:            false,
+		Engine:                engine,
 	}, true
 }

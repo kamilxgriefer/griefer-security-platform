@@ -5,6 +5,7 @@
 package incidents
 
 import (
+	"sort"
 	"time"
 
 	"github.com/kamilxgriefer/griefer-security-platform/internal/events"
@@ -36,8 +37,43 @@ type Finding struct {
 	Techniques  []Technique     `json:"techniques,omitempty"`
 	EntityIDs   []string        `json:"entity_ids,omitempty"`
 	EventIDs    []string        `json:"event_ids,omitempty"`
-	FirstSeen   time.Time       `json:"first_seen"`
-	LastSeen    time.Time       `json:"last_seen"`
+	// ProducerIDs names the authenticated producers whose events backed this
+	// finding. A set rather than one value: findings merge by rule, and one
+	// rule legitimately fires on events from several sensors.
+	//
+	// Empty where no producer was enrolled, which reads as unattributed rather
+	// than as one anonymous producer — the distinction that stops an
+	// unauthenticated deployment from looking corroborated.
+	ProducerIDs []string  `json:"producer_ids,omitempty"`
+	FirstSeen   time.Time `json:"first_seen"`
+	LastSeen    time.Time `json:"last_seen"`
+}
+
+// EvidenceProducers returns the distinct authenticated producers backing the
+// incident, sorted.
+//
+// Computed from Findings and never from Evidence: that list stops growing at
+// maxIncidentEvidence, so deriving a security property from it would make the
+// property quietly weaken on a busy incident.
+//
+// This is NOT yet what the Policy Kernel gates on. It is carried so the binary
+// sends it before any policy requires it — a bundle that demanded a field an
+// older binary does not send would fail input validation and deny everything.
+func (i *Incident) EvidenceProducers() []string {
+	seen := make(map[string]bool, len(i.Findings))
+	for _, f := range i.Findings {
+		for _, p := range f.ProducerIDs {
+			if p != "" {
+				seen[p] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // EntityRef is a lightweight reference to a graph entity, embedded in incident
@@ -167,12 +203,18 @@ const (
 // PolicyDecision is the Policy Kernel's verdict, recorded verbatim on the
 // action so that a decision can be reconstructed and argued about later.
 type PolicyDecision struct {
-	Effect        string    `json:"effect"`
-	Allow         bool      `json:"allow"`
-	Reasons       []string  `json:"reasons"`
-	PolicyPackage string    `json:"policy_package"`
-	PolicyVersion string    `json:"policy_version"`
-	EvaluatedAt   time.Time `json:"evaluated_at"`
+	Effect        string   `json:"effect"`
+	Allow         bool     `json:"allow"`
+	Reasons       []string `json:"reasons"`
+	PolicyPackage string   `json:"policy_package"`
+	PolicyVersion string   `json:"policy_version"`
+	// EvidenceCategoryCount is the count the policy itself reported.
+	//
+	// Recorded because the verdict turned on it: without the number, a reader
+	// of the trail cannot tell a two-category allow from a five-category one,
+	// and the corroboration rule is the one most worth being able to re-read.
+	EvidenceCategoryCount int       `json:"evidence_category_count"`
+	EvaluatedAt           time.Time `json:"evaluated_at"`
 	// FailClosed is true when the decision was produced by GRIEFER's
 	// fail-closed path because the Policy Kernel could not be reached.
 	FailClosed bool `json:"fail_closed"`

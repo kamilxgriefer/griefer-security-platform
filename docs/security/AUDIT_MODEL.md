@@ -495,6 +495,13 @@ from the verified credential, never from `source_name` in the body — that fiel
 is what a sender writes, and attributing a record to it would attribute
 telemetry to whoever asked to be attributed.
 
+`event.rejected` also gains `error_kind: producer_id_collision`, recording which
+producer already holds the id. Event ids are producer-supplied and a real
+connector derives them from the upstream system, so a neighbour's are
+predictable: a producer that pre-registers an id its neighbour will later use
+makes that neighbour's genuine event vanish as a duplicate. A retry from the
+holder stays silent, because that is what a retry is.
+
 `event.rejected` gains `error_kind: producer_source_mismatch`, recording the
 `(source_type, source_name)` a producer claimed and was not entitled to. A
 credential trying to be a second sensor is the shape of attack the entitlement

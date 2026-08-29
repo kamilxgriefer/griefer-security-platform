@@ -27,6 +27,7 @@ func isolate(t *testing.T) {
 		"NATS_PASSWORD", "GRIEFER_NATS_PASSWORD", "GRIEFER_NATS_ENABLED",
 		"OPA_URL", "GRIEFER_OPA_URL", "GRIEFER_OPA_FAIL_CLOSED",
 		"INTERNAL_API_TOKEN", "GRIEFER_INTERNAL_API_TOKEN",
+		"GRIEFER_PRODUCERS",
 		"RESPONSE_MODE", "GRIEFER_RESPONSE_MODE",
 		"ALLOW_REAL_ACTIONS", "SYNTHETIC_DATA_ONLY", "SEED_SYNTHETIC_DEMO",
 		"GRIEFER_LOG_LEVEL", "GRIEFER_LOG_FORMAT",
@@ -363,4 +364,130 @@ func TestASecretCopiedFromTheExampleFileIsRefused(t *testing.T) {
 			t.Fatalf("Load() error = %v", err)
 		}
 	})
+}
+
+// enrol configures one producer and the service credential it needs.
+func enrol(t *testing.T, name, key, sources string) {
+	t.Helper()
+	isolate(t)
+	t.Setenv("INTERNAL_API_TOKEN", "3f9a1c77b0e24d5e8a6c1f0b9d2e4a67")
+	t.Setenv("GRIEFER_PRODUCERS", name)
+	suffix := strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(name))
+	t.Setenv("GRIEFER_PRODUCER_"+suffix+"_KEY", key)
+	t.Setenv("GRIEFER_PRODUCER_"+suffix+"_SOURCES", sources)
+}
+
+const producerKey = "3f9a1c77b0e24d5e8a6c1f0b9d2e4a67c5b8e1d0"
+
+func TestAProducerKeyringLoadsAndIsRedacted(t *testing.T) {
+	enrol(t, "okta-prod", producerKey, "identity_provider:okta-prod,cloud_audit:aws-org")
+
+	cfg, _, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.Producers) != 1 {
+		t.Fatalf("Producers = %d, want 1", len(cfg.Producers))
+	}
+	p := cfg.Producers[0]
+	if p.Name != "okta-prod" || p.Key != producerKey || len(p.Sources) != 2 {
+		t.Fatalf("producer = %+v", p)
+	}
+
+	// A key must never reach a log line, and Redacted is what -print-config uses.
+	red := cfg.Redacted()
+	if red.Producers[0].Key == producerKey {
+		t.Error("Redacted() left a producer key in place")
+	}
+	if red.Producers[0].Name != "okta-prod" {
+		t.Error("Redacted() removed the producer name, which is what makes the output useful")
+	}
+	if cfg.Producers[0].Key != producerKey {
+		t.Error("Redacted() mutated the configuration the server is running on")
+	}
+}
+
+// TestAProducerConfigurationThatCannotWorkIsRefusedAtStartup.
+//
+// Every case here is an operator mistake that would otherwise surface as a
+// sensor being refused at three in the morning, with nothing saying why.
+func TestAProducerConfigurationThatCannotWorkIsRefusedAtStartup(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T)
+		want  string
+	}{
+		{"no key", func(t *testing.T) {
+			enrol(t, "okta-prod", producerKey, "identity_provider:okta-prod")
+			t.Setenv("GRIEFER_PRODUCER_OKTA_PROD_KEY", "")
+		}, "KEY is empty"},
+
+		{"key too short", func(t *testing.T) {
+			enrol(t, "okta-prod", "tooshort", "identity_provider:okta-prod")
+		}, "the minimum is"},
+
+		{"key is the published placeholder", func(t *testing.T) {
+			enrol(t, "okta-prod", "placeholder-"+config.PlaceholderSecretMarker+"-padded-out", "identity_provider:okta-prod")
+		}, "placeholder"},
+
+		{"no entitlement", func(t *testing.T) {
+			enrol(t, "okta-prod", producerKey, "identity_provider:okta-prod")
+			t.Setenv("GRIEFER_PRODUCER_OKTA_PROD_SOURCES", "")
+		}, "could claim any source"},
+
+		{"source type the schema does not accept", func(t *testing.T) {
+			enrol(t, "okta-prod", producerKey, "identity_providr:okta-prod")
+		}, "does not accept"},
+
+		{"malformed entitlement", func(t *testing.T) {
+			enrol(t, "okta-prod", producerKey, "identity_provider")
+		}, "<source_type>:<source_name>"},
+
+		{"name outside the pattern", func(t *testing.T) {
+			enrol(t, "Okta Prod", producerKey, "identity_provider:okta-prod")
+		}, "not acceptable"},
+
+		{"two names reading one variable", func(t *testing.T) {
+			isolate(t)
+			t.Setenv("INTERNAL_API_TOKEN", "3f9a1c77b0e24d5e8a6c1f0b9d2e4a67")
+			t.Setenv("GRIEFER_PRODUCERS", "okta-prod,okta.prod")
+			t.Setenv("GRIEFER_PRODUCER_OKTA_PROD_KEY", producerKey)
+			t.Setenv("GRIEFER_PRODUCER_OKTA_PROD_SOURCES", "identity_provider:okta-prod")
+		}, "silently inherits"},
+
+		{"a keyring with no service credential", func(t *testing.T) {
+			enrol(t, "okta-prod", producerKey, "identity_provider:okta-prod")
+			t.Setenv("INTERNAL_API_TOKEN", "")
+		}, "is not a boundary"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.setup(t)
+			_, _, err := config.Load()
+			if err == nil {
+				t.Fatal("Load() accepted a producer configuration that cannot work")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want it to mention %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+// TestAnUnenrolledDeploymentIsWarnedRatherThanRefused. Every deployment starts
+// here, and a refusal would mean nobody could run GRIEFER at all.
+func TestAnUnenrolledDeploymentIsWarnedRatherThanRefused(t *testing.T) {
+	isolate(t)
+	_, warnings, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	var found bool
+	for _, w := range warnings {
+		if w.Setting == "GRIEFER_PRODUCERS" && strings.Contains(w.Message, "one caller") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warnings = %+v, want one naming GRIEFER_PRODUCERS and what its absence costs", warnings)
+	}
 }

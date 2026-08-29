@@ -26,3 +26,4 @@ reversal is a new ADR that supersedes the old one.
 | [0006](0006-action-evaluation-audit-atomicity.md) | Evaluate policy outside the transaction, persist the decision inside one | Accepted |
 | [0007](0007-hash-chained-audit-without-anchor.md) | Hash-chain the audit trail without an external anchor | Accepted |
 | [0008](0008-operator-held-audit-anchors.md) | Anchor the audit chain in the operator's hands | Accepted |
+| [0009](0009-authenticated-event-producers.md) | Authenticate event producers and bind them to a source identity | Accepted |

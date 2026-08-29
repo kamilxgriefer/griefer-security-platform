@@ -25,6 +25,10 @@ type Config struct {
 	Log      Log
 	Response Response
 	Auth     Auth
+	// Producers is the enrolled telemetry keyring. Empty means ingest is
+	// unauthenticated beyond the service credential, which is where every
+	// deployment starts and which startup warns about.
+	Producers []Producer
 }
 
 // HTTP configures the API server.
@@ -172,6 +176,15 @@ func Load() (Config, []Warning, error) {
 			InternalAPIToken: envFirst("", "INTERNAL_API_TOKEN", "GRIEFER_INTERNAL_API_TOKEN"),
 		},
 	}
+	// Loaded in Load rather than in Validate, which takes its receiver by
+	// value: an assignment there would set a field on a copy and be discarded,
+	// compiling cleanly and doing nothing.
+	producers, err := loadProducers()
+	if err != nil {
+		return Config{}, nil, err
+	}
+	cfg.Producers = producers
+
 	warnings, err := cfg.Validate()
 	return cfg, warnings, err
 }
@@ -240,6 +253,21 @@ func (c Config) Validate() ([]Warning, error) {
 		}
 	}
 
+	if len(c.Producers) > 0 && strings.TrimSpace(c.Auth.InternalAPIToken) == "" {
+		return nil, fmt.Errorf(
+			"config: producers are enrolled but INTERNAL_API_TOKEN is empty. The producer " +
+				"credential attributes telemetry; it does not admit the connection, and an ingest " +
+				"boundary reachable without any credential at all is not a boundary")
+	}
+	if len(c.Producers) == 0 {
+		warnings = append(warnings, Warning{
+			Setting: "GRIEFER_PRODUCERS",
+			Message: "no event producers are enrolled; ingest is authenticated only by the shared " +
+				"service credential, so telemetry is not attributable to a sensor and the " +
+				"corroboration gate can be satisfied from one caller",
+		})
+	}
+
 	// A value published in a public repository is not a secret. Every
 	// placeholder in .env.example carries this marker precisely so that a
 	// configuration copied from it fails loudly instead of running on a
@@ -257,6 +285,15 @@ func (c Config) Validate() ([]Warning, error) {
 			return nil, fmt.Errorf(
 				"config: %s still holds the placeholder from .env.example, which is published and therefore not a secret. "+
 					"Run `make secrets` to generate real values", s.setting)
+		}
+	}
+	for _, p := range c.Producers {
+		for _, key := range []string{p.Key, p.PreviousKey} {
+			if strings.Contains(key, PlaceholderSecretMarker) {
+				return nil, fmt.Errorf(
+					"config: the key for producer %q still holds the placeholder from .env.example. "+
+						"Run `make secrets` to generate real values", p.Name)
+			}
 		}
 	}
 
@@ -377,6 +414,21 @@ func (c Config) Redacted() Config {
 	}
 	if out.NATS.Password != "" {
 		out.NATS.Password = "[redacted]"
+	}
+	// The keyring is copied so that blanking a key here cannot reach back into
+	// the configuration the server is actually running on.
+	if len(out.Producers) > 0 {
+		producers := make([]Producer, len(out.Producers))
+		copy(producers, out.Producers)
+		for i := range producers {
+			if producers[i].Key != "" {
+				producers[i].Key = "[redacted]"
+			}
+			if producers[i].PreviousKey != "" {
+				producers[i].PreviousKey = "[redacted]"
+			}
+		}
+		out.Producers = producers
 	}
 	return out
 }

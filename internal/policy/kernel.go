@@ -119,6 +119,7 @@ type rawDecision struct {
 	PolicyPackage         string   `json:"policy_package"`
 	PolicyVersion         string   `json:"policy_version"`
 	EvidenceCategoryCount int      `json:"evidence_category_count"`
+	EvidenceProducerCount int      `json:"evidence_producer_count"`
 }
 
 // toDecision converts a decoded Rego document into a domain decision,
@@ -160,6 +161,7 @@ func (r rawDecision) toDecision(engine string, at time.Time) (incidents.PolicyDe
 		// turned on — and a reader could not tell a two-category allow from a
 		// five-category one.
 		EvidenceCategoryCount: r.EvidenceCategoryCount,
+		EvidenceProducerCount: r.EvidenceProducerCount,
 		EvaluatedAt:           at.UTC(),
 		FailClosed:            false,
 		Engine:                engine,

@@ -27,3 +27,4 @@ reversal is a new ADR that supersedes the old one.
 | [0007](0007-hash-chained-audit-without-anchor.md) | Hash-chain the audit trail without an external anchor | Accepted |
 | [0008](0008-operator-held-audit-anchors.md) | Anchor the audit chain in the operator's hands | Accepted |
 | [0009](0009-authenticated-event-producers.md) | Authenticate event producers and bind them to a source identity | Accepted |
+| [0010](0010-corroboration-counts-producers.md) | Count distinct producers, where producers exist | Accepted |

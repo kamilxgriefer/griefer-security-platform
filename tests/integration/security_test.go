@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -490,11 +491,19 @@ func TestSafetyContract_NothingIsEverExecuted(t *testing.T) {
 // distinct categories to clear the gate that exists so that "compromising a
 // single sensor is not enough to drive an action".
 //
-// This test asserts the hole is OPEN. It is written that way on purpose: a
-// limit stated only in prose is a limit nobody notices ceasing to be true, and
-// when producer authentication lands this test must fail and be rewritten as the
-// property rather than the residual. Its failure is the signal that M4's other
-// half arrived.
+// This test asserts the hole is OPEN, for a deployment that has enrolled NO
+// producers — the stack below configures none, which is what
+// `GRIEFER_PRODUCERS` being unset means in production today.
+//
+// It is written that way on purpose: a limit stated only in prose is a limit
+// nobody notices ceasing to be true. Producer authentication (ADR 0009) and the
+// producer bar (ADR 0010) close this for deployments that enrol their sensors —
+// see TestSafetyContract_OneProducerRequiresApproval for that half — but they
+// close nothing for a deployment that does not, and docs/SAFETY_MODEL.md rule 2
+// says so rather than glossing it. This case is that sentence, run.
+//
+// If this test ever fails, the unenrolled path grew a protection it did not
+// have: rewrite it as the property rather than deleting it.
 //
 // See docs/adr/0005-evidence-categories.md for why the gate counts categories.
 func TestSafetyContract_OneCredentialSatisfiesTheCorroborationGate(t *testing.T) {
@@ -547,6 +556,188 @@ func TestSafetyContract_OneCredentialSatisfiesTheCorroborationGate(t *testing.T)
 			t.Fatal("a finding with no rule id")
 		}
 	}
-	t.Logf("one credential produced %d evidence categories: %v — this is T1's residual, "+
-		"and producer authentication is what closes it", len(categories), categories)
+	t.Logf("one credential produced %d evidence categories: %v — this is T1's residual "+
+		"in a deployment that enrols no producers", len(categories), categories)
+}
+
+// eventFrom renders a valid event attributed to a given source identity.
+//
+// eventAt hard-codes one source, which is exactly the wrong shape for a test
+// about telling sources apart.
+func eventFrom(sourceType, sourceName, eventType, category, actorID, extra string) string {
+	base := fmt.Sprintf(`"schema_version":"0.1","timestamp":%q,"source_type":%q,"source_name":%q,`+
+		`"event_type":%q,"category":%q,"severity":"high","actor":{"type":"identity","id":%q}`,
+		time.Now().UTC().Format(time.RFC3339), sourceType, sourceName, eventType, category, actorID)
+	if extra != "" {
+		base += "," + extra
+	}
+	return "{" + base + "}"
+}
+
+// twoProducers is the keyring both cases below run against.
+//
+// Entitlements are exact pairs: okta-prod cannot post as azure-ad-prod, which
+// is the property that makes counting producers mean anything. Keys are test
+// fixtures and long enough to satisfy the configured floor.
+func twoProducers() []httpx.ProducerCredential {
+	return []httpx.ProducerCredential{
+		{
+			Name:    "okta-prod",
+			Key:     "test-key-okta-prod-0000000000000000000000",
+			Sources: []httpx.SourceRef{{Type: "identity_provider", Name: "okta-prod"}},
+		},
+		{
+			Name:    "azure-ad-prod",
+			Key:     "test-key-azure-ad-prod-000000000000000000",
+			Sources: []httpx.SourceRef{{Type: "identity_provider", Name: "azure-ad-prod"}},
+		},
+	}
+}
+
+// Case 13 — the producer bar refusing what the category bar would have allowed.
+//
+// Same victim, same three detections, enough categories to clear ADR 0005's
+// gate. The only difference from case 12 is that this deployment authenticates
+// its sensors, and ONE of them supplied all of the evidence.
+//
+// This is the attack case 12 documents as open, run against a deployment that
+// took the step that closes it.
+func TestSafetyContract_OneProducerRequiresApproval(t *testing.T) {
+	s := newStack(t, stackOptions{producers: twoProducers()})
+
+	const victim = "u-6100"
+	const key = "test-key-okta-prod-0000000000000000000000"
+	submissions := []struct{ eventType, category, extra string }{
+		{"user_signin", "authentication", `"network":{"source_ip":"203.0.113.99","first_seen_for_actor":true}`},
+		{"role_assignment_changed", "privilege_escalation", ""},
+		{"secret_accessed", "credential_access", `"target":{"type":"secret","id":"kv/prod/signing-key"}`},
+	}
+
+	var incidentID string
+	for _, sub := range submissions {
+		body := eventFrom("identity_provider", "okta-prod", sub.eventType, sub.category, victim, sub.extra)
+		resp, raw := s.postAs("okta-prod", key, "/api/v1/events", body)
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("%s: status = %d (%s)", sub.eventType, resp.StatusCode, raw)
+		}
+		var result api.IngestResult
+		s.decode(raw, &result)
+		if result.IncidentID != "" {
+			incidentID = result.IncidentID
+		}
+	}
+	if incidentID == "" {
+		t.Fatal("three correlated events produced no incident")
+	}
+
+	inc, err := s.store.GetIncident(context.Background(), incidentID)
+	if err != nil {
+		t.Fatalf("GetIncident() error = %v", err)
+	}
+	// The category bar is satisfied. That is the point: what follows is refused
+	// on the producer count alone.
+	if got := len(inc.EvidenceCategories()); got < 2 {
+		t.Fatalf("EvidenceCategories = %d; this case is only meaningful when the "+
+			"category bar is already cleared", got)
+	}
+	if got := inc.EvidenceProducers(); len(got) != 1 {
+		t.Fatalf("EvidenceProducers = %v, want exactly one", got)
+	}
+
+	_, action, body := s.evaluate(incidentID, "preserve_evidence", "simulate", true)
+	if action == nil {
+		t.Fatalf("no action returned: %s", body)
+	}
+	if action.Status != incidents.ActionRequiresApproval {
+		t.Fatalf("Status = %q, want %q.\n"+
+			"One authenticated producer supplied every category of evidence. "+
+			"Automating on that is the attack ADR 0010 exists to stop.\nbody = %s",
+			action.Status, incidents.ActionRequiresApproval, body)
+	}
+	if action.PolicyDecision == nil {
+		t.Fatal("no policy decision was recorded")
+	}
+	if got := action.PolicyDecision.EvidenceProducerCount; got != 1 {
+		t.Errorf("EvidenceProducerCount = %d, want 1 — the trail must record the "+
+			"number the verdict turned on", got)
+	}
+	var named bool
+	for _, r := range action.PolicyDecision.Reasons {
+		if strings.Contains(r, "producers") {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("no reason names the producer bar: %v.\n"+
+			"A refusal an operator cannot explain is a refusal they will route around.",
+			action.PolicyDecision.Reasons)
+	}
+}
+
+// Case 14 — the same incident, corroborated by two producers, is automatable.
+//
+// The bar has to be passable, or it is not a bar but an off switch. This is the
+// half that proves the refusal above is about corroboration rather than about
+// producer authentication being on.
+func TestSafetyContract_TwoProducersClearTheCorroborationBar(t *testing.T) {
+	s := newStack(t, stackOptions{producers: twoProducers()})
+
+	const victim = "u-6200"
+	submissions := []struct{ producer, key, source, eventType, category, extra string }{
+		{
+			"okta-prod", "test-key-okta-prod-0000000000000000000000", "okta-prod",
+			"user_signin", "authentication",
+			`"network":{"source_ip":"203.0.113.99","first_seen_for_actor":true}`,
+		},
+		{
+			"okta-prod", "test-key-okta-prod-0000000000000000000000", "okta-prod",
+			"role_assignment_changed", "privilege_escalation", "",
+		},
+		// A second, independently credentialled sensor sees the same actor.
+		{
+			"azure-ad-prod", "test-key-azure-ad-prod-000000000000000000", "azure-ad-prod",
+			"secret_accessed", "credential_access",
+			`"target":{"type":"secret","id":"kv/prod/signing-key"}`,
+		},
+	}
+
+	var incidentID string
+	for _, sub := range submissions {
+		body := eventFrom("identity_provider", sub.source, sub.eventType, sub.category, victim, sub.extra)
+		resp, raw := s.postAs(sub.producer, sub.key, "/api/v1/events", body)
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("%s from %s: status = %d (%s)", sub.eventType, sub.producer, resp.StatusCode, raw)
+		}
+		var result api.IngestResult
+		s.decode(raw, &result)
+		if result.IncidentID != "" {
+			incidentID = result.IncidentID
+		}
+	}
+	if incidentID == "" {
+		t.Fatal("three correlated events produced no incident")
+	}
+
+	inc, err := s.store.GetIncident(context.Background(), incidentID)
+	if err != nil {
+		t.Fatalf("GetIncident() error = %v", err)
+	}
+	if got := inc.EvidenceProducers(); len(got) != 2 {
+		t.Fatalf("EvidenceProducers = %v, want two — the incident did not gather "+
+			"evidence from both sensors, so this case tests nothing", got)
+	}
+
+	_, action, body := s.evaluate(incidentID, "preserve_evidence", "simulate", true)
+	if action == nil {
+		t.Fatalf("no action returned: %s", body)
+	}
+	if action.Status != incidents.ActionSimulated {
+		t.Fatalf("Status = %q, want %q.\n"+
+			"Two independently credentialled producers corroborate this incident. "+
+			"If that cannot be automated, the bar is an off switch.\nbody = %s",
+			action.Status, incidents.ActionSimulated, body)
+	}
+	if got := action.PolicyDecision.EvidenceProducerCount; got != 2 {
+		t.Errorf("EvidenceProducerCount = %d, want 2", got)
+	}
 }

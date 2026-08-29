@@ -28,6 +28,7 @@ import (
 	"github.com/kamilxgriefer/griefer-security-platform/internal/demo"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/events"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/graph"
+	"github.com/kamilxgriefer/griefer-security-platform/internal/httpx"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/incidents"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/policy"
 	"github.com/kamilxgriefer/griefer-security-platform/internal/storage"
@@ -47,6 +48,7 @@ type stackOptions struct {
 	kernel         policy.Kernel
 	maxRequestSize int64
 	maxBatchEvents int
+	producers      []httpx.ProducerCredential
 }
 
 func newStack(t *testing.T, opts stackOptions) *stack {
@@ -113,6 +115,7 @@ func newStack(t *testing.T, opts stackOptions) *stack {
 	server := httptest.NewServer(api.NewRouter(svc, api.RouterOptions{
 		Registry: registry, MaxRequestBytes: maxSize,
 		RateLimitRPS: 10000, RateLimitBurst: 10000, Logger: logger,
+		Producers: opts.producers,
 	}))
 	t.Cleanup(server.Close)
 
@@ -126,6 +129,23 @@ func (s *stack) post(path, body string) (*http.Response, string) {
 		s.t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	return s.send(req)
+}
+
+// postAs posts as an authenticated producer.
+//
+// The service credential is unchanged: producer identity is ANDed onto it, and
+// a test that dropped the service credential to add a producer one would be
+// asserting a substitution the platform does not offer.
+func (s *stack) postAs(producer, key, path, body string) (*http.Response, string) {
+	s.t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, s.server.URL+path, strings.NewReader(body))
+	if err != nil {
+		s.t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(httpx.HeaderProducer, producer)
+	req.Header.Set(httpx.HeaderProducerKey, key)
 	return s.send(req)
 }
 

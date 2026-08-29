@@ -56,12 +56,14 @@ incident against a colleague, or steer GRIEFER's conclusions.
   accepted backdating against a six-hour correlation window made that a wide
   gap; `TestABackdatedEventCannotSplitASubjectsIncident` holds it shut.
 - `received_at` is server-owned and overwrites anything a producer supplies.
-- Automated response requires **two independent evidence categories**, so
-  compromising a single sensor is not enough to drive an action. Note what
-  "independent" means here and does not: independent *category*, never
-  independent *source*. One producer emitting four event types for one identity
-  reaches four categories, so the gate is a bar against a single weak detection
-  and not against a single credential. Closing that is producer authentication.
+- Automated response requires **two independent evidence categories**, so a
+  single weak detection is not enough to drive an action.
+- **And, where producers are enrolled, two distinct producers.** The category
+  count answers *how many kinds of evidence*; it never answered *how many
+  sensors said so*, and one credential can supply every category at once. The
+  policy now ANDs a producer count onto the category count, so one entitled
+  producer posting four event types for one identity no longer reaches the bar.
+  See [ADR 0010](adr/0010-corroboration-counts-producers.md).
 - Per-client rate limiting bounds how much a producer can inject.
 
 - **Producers authenticate and are bound to a source identity.** A sensor
@@ -80,14 +82,18 @@ incident against a colleague, or steer GRIEFER's conclusions.
 
 *Not mitigated*
 
-- **The corroboration gate still counts independent CATEGORY and never
-  independent SOURCE.** Authentication changed who may send and what they may
-  claim to be; it did not change what the gate counts. One *entitled* producer
-  posting four schema-valid events for one identity still reaches three evidence
-  categories and still clears the risk floor, which
-  `TestSafetyContract_OneCredentialSatisfiesTheCorroborationGate` asserts.
-  Making the gate count distinct producers is a separate decision with its own
-  record, because it changes what GRIEFER may do without a human. → M4
+- **A deployment that enrols no producers keeps the old, weaker gate.** The
+  producer count is read with a default and does not fire when it is zero, so a
+  deployment with `GRIEFER_PRODUCERS` unset is held to the category bar alone —
+  where one holder of the service credential still reaches three categories and
+  still clears the risk floor. `TestSafetyContract_OneCredentialSatisfiesTheCorroborationGate`
+  asserts that this remains true rather than letting it be quietly claimed away,
+  and `docs/security/PRODUCER_AUTH.md` is the operator's path out of it.
+
+  This is a deliberate trade: requiring the field outright would couple the
+  policy bundle to the binary and refuse every action until the two were
+  deployed together. ADR 0010 records why that ordering hazard was judged worse
+  than the residual.
 - **Distinct credentials are not independent compromise.** Two keys in one CI
   secret store, on one collector host or in one deployment manifest count as
   two, and the Security Graph has no producer entity, so nothing can place them
@@ -479,7 +485,7 @@ Threats without tests are wishes. Where each is exercised:
 
 | Threat | Test |
 |---|---|
-| T1 forged telemetry | `TestNormalizeRejectsTimestampsOutsideTheIngestWindow`, `TestValidatorRejectsMalformedEvents` |
+| T1 forged telemetry | `TestNormalizeRejectsTimestampsOutsideTheIngestWindow`, `TestValidatorRejectsMalformedEvents`, `TestSafetyContract_OneProducerRequiresApproval` |
 | T2 sensor suppression | `TestTelemetryCaptureSurvivesADegradedCorrelationEngine` |
 | T3 operator compromise | `TestSafetyContract_DestructiveActionsAreAlwaysDenied` |
 | T4 policy tampering | `TestRemoteKernelFailsClosed`, `TestEmbeddedKernelFailsClosedOnMalformedInput`, `opa test` |

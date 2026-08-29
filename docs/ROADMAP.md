@@ -129,9 +129,17 @@ milestone does not close on a half — see
       `(source_type, source_name)` entitlement. Neither mTLS nor signed tokens —
       both were considered and the reasons are in
       [ADR 0009](adr/0009-authenticated-event-producers.md)
-- [ ] Make the corroboration gate count distinct producers. This is what T1's
-      headline claim needs and authentication alone does not deliver: one
-      entitled producer still reaches the two-category bar
+- [x] Make the corroboration gate count distinct producers — what T1's headline
+      claim needs and authentication alone does not deliver. ANDed onto the
+      category count, and enforced only where producers are enrolled: the count
+      is read with a default so an unenrolled deployment keeps today's behaviour
+      instead of the policy bundle and the binary having to ship in lockstep.
+      That residual is stated in **T1** and in `SAFETY_MODEL` rule 2 rather than
+      glossed. See [ADR 0010](adr/0010-corroboration-counts-producers.md)
+- [ ] Give operators a reason to enrol: a `producer_keys` table so revocation is
+      an API call rather than a redeploy, and per-producer rate limits. Deferred
+      from [ADR 0009](adr/0009-authenticated-event-producers.md); the corroboration
+      bar above is only as good as the number of deployments that turn it on
 
 **Done when:** GRIEFER correlates real Entra ID telemetry from a lab tenant, and
 `audit/verify` detects a row deleted directly in PostgreSQL.

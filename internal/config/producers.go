@@ -122,7 +122,7 @@ func loadProducers() ([]Producer, error) {
 		}
 		if len(p.Key) < MinProducerKeyBytes {
 			return nil, fmt.Errorf("config: GRIEFER_PRODUCER_%s_KEY is %d bytes; the minimum is %d. "+
-				"Run `make secrets` to generate one", suffix, len(p.Key), MinProducerKeyBytes)
+				"Generate one with `openssl rand -base64 48`", suffix, len(p.Key), MinProducerKeyBytes)
 		}
 		sources, err := parseSources(name, suffix, known)
 		if err != nil {

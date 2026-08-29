@@ -43,6 +43,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -59,6 +60,7 @@ const repoRoot = "../.."
 // to this list and not a silently smaller check.
 var annotatedFiles = []string{
 	"docs/THREAT_MODEL.md",
+	"docs/SAFETY_MODEL.md",
 }
 
 var claimBlock = regexp.MustCompile(`(?s)<!--\s*griefer:claims\s*(.*?)-->`)
@@ -143,6 +145,14 @@ func resolve(t *testing.T, target string) (string, bool) {
 			return "", false
 		}
 		return resolveGoConst(t, filepath.Join(repoRoot, file), name)
+	case strings.HasPrefix(target, "rego:"):
+		spec := strings.TrimPrefix(target, "rego:")
+		file, name, ok := strings.Cut(spec, "#")
+		if !ok {
+			t.Errorf("malformed rego target %q, want rego:<file>#<rule>", target)
+			return "", false
+		}
+		return resolveRegoScalar(t, filepath.Join(repoRoot, file), name)
 	case target == "gomod:direct":
 		return strconv.Itoa(countDirectGoModules(t)), true
 	case strings.HasPrefix(target, "npm:"):
@@ -152,6 +162,36 @@ func resolve(t *testing.T, target string) (string, bool) {
 	}
 	t.Errorf("unknown target kind %q", target)
 	return "", false
+}
+
+// resolveRegoScalar reads a scalar rule assignment out of a Rego file.
+//
+// A regex rather than an evaluation: running `opa eval` would make this test
+// require a tool the Go suite otherwise does not, and would fail for the wrong
+// reason on a machine that lacks it. The cost is that this matches the SOURCE
+// rather than the evaluated value, so it catches the drift it exists to catch —
+// prose quoting a threshold the policy no longer holds — and not a rule whose
+// value is computed. Every threshold worth binding here is a literal, and the
+// error below says so if one stops being one.
+func resolveRegoScalar(t *testing.T, path, name string) (string, bool) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Errorf("read %s: %v", path, err)
+		return "", false
+	}
+	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(name) + `\s*:=\s*(.+?)\s*$`)
+	m := re.FindSubmatch(data)
+	if m == nil {
+		t.Errorf("no rule %q assigned in %s", name, path)
+		return "", false
+	}
+	value := string(m[1])
+	if _, err := strconv.ParseFloat(value, 64); err != nil {
+		t.Errorf("rule %q in %s is %q, which is not a scalar this binding can check", name, path, value)
+		return "", false
+	}
+	return value, true
 }
 
 func resolveGoConst(t *testing.T, path, name string) (string, bool) {
@@ -389,4 +429,51 @@ func TestEveryBoundClaimMatchesTheCode(t *testing.T) {
 		t.Fatal("no claim directives were checked at all; this test is not guarding anything")
 	}
 	t.Logf("checked %d bound claims", total)
+}
+
+// TestEveryClaimBlockIsChecked closes the trap the list above would otherwise set.
+//
+// annotatedFiles is deliberate rather than discovered, for the reason stated
+// where it is declared. The cost of that choice is a silent one: a claim block
+// added to a document nobody listed is never read, and its author sees a green
+// suite and believes their number is bound. That is a worse position than
+// having no binding, because it is a binding they now trust.
+//
+// This test was added after exactly that happened — a block landed in
+// SAFETY_MODEL.md, the value it bound was changed by hand to a wrong number,
+// and the suite stayed green.
+func TestEveryClaimBlockIsChecked(t *testing.T) {
+	listed := make(map[string]bool, len(annotatedFiles))
+	for _, doc := range annotatedFiles {
+		listed[filepath.Clean(doc)] = true
+	}
+
+	err := filepath.WalkDir(filepath.Join(repoRoot, "docs"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".md") {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if !claimBlock.Match(body) {
+			return nil
+		}
+		rel, err := filepath.Rel(repoRoot, path)
+		if err != nil {
+			return err
+		}
+		if !listed[filepath.Clean(rel)] {
+			t.Errorf("%s carries a griefer:claims block and is not in annotatedFiles, "+
+				"so nothing checks it. Add it to the list, or delete the block — a "+
+				"binding nobody reads is worse than none, because its author trusts it.", rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk docs: %v", err)
+	}
 }

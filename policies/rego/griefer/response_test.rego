@@ -296,3 +296,61 @@ allow_agrees_with_effect(decision) if {
 	decision.effect != "allow"
 	decision.allow == false
 }
+
+# --- The producer dimension (ADR 0010) -------------------------------------
+#
+# Counted ALONGSIDE categories, and only where producers exist. A deployment
+# that has enrolled nobody sends an empty list and is held to the category bar
+# alone — which one caller can satisfy, and which the safety model says out loud
+# rather than pretending otherwise.
+
+test_an_unenrolled_deployment_keeps_the_category_bar if {
+	# No evidence_producers at all: the shape every deployment sends today, and
+	# the shape an older binary sends after the bundle updates. Both must reach
+	# the same verdict they reached before this rule existed.
+	decision := response.decision with input as baseline
+	decision.effect == "allow"
+	decision.evidence_producer_count == 0
+}
+
+test_one_producer_does_not_authorise_automation if {
+	decision := response.decision with input as with_incident({"evidence_producers": ["okta-prod"]})
+	decision.effect == "require_approval"
+	decision.evidence_producer_count == 1
+	some reason in decision.reasons
+	contains(reason, "distinct authenticated producers")
+}
+
+test_two_producers_authorise_a_corroborated_simulation if {
+	decision := response.decision with input as with_incident({"evidence_producers": ["okta-prod", "edr-fleet"]})
+	decision.effect == "allow"
+	decision.evidence_producer_count == 2
+}
+
+test_a_repeated_producer_counts_once if {
+	# The count is over CREDENTIALS. One credential entitled to two source
+	# identities is still one sensor.
+	decision := response.decision with input as with_incident({"evidence_producers": ["okta-prod", "okta-prod"]})
+	decision.effect == "require_approval"
+	decision.evidence_producer_count == 1
+}
+
+test_a_human_request_is_not_held_to_the_producer_bar if {
+	request := object.union(
+		with_request({"automated": false}),
+		{"incident": object.union(baseline.incident, {"evidence_producers": ["okta-prod"]})},
+	)
+	decision := response.decision with input as request
+	decision.effect == "allow"
+}
+
+test_isolation_on_one_producer_names_the_action_class if {
+	request := object.union(
+		with_action({"type": "isolate_endpoint", "isolation": true, "rollback_action": "release_endpoint_isolation"}),
+		{"incident": object.union(baseline.incident, {"evidence_producers": ["okta-prod"]})},
+	)
+	decision := response.decision with input as request
+	decision.effect == "require_approval"
+	some reason in decision.reasons
+	contains(reason, "single producer")
+}

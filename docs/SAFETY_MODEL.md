@@ -85,9 +85,11 @@ sentence.
 
 `policies/rego/griefer/response.rego` · `TestSafetyContract_SingleWeakSignalDoesNotIsolate`
 
-### 2. Automated response requires two independent evidence categories
+### 2. Automated response requires two independent evidence categories — and, where producers are authenticated, two distinct producers
 
-*Prevents:* one noisy detection driving action by firing repeatedly.
+*Prevents:* one noisy detection driving action by firing repeatedly, and — where
+the second half applies — one compromised credential driving action by
+fabricating variety.
 
 Categories are the unit, not findings. Ten sign-in anomalies for one identity are
 one observation restated, and the policy counts *distinct* categories:
@@ -100,7 +102,48 @@ Risk scoring applies the same principle independently — within-category
 repetition is capped at +50% — so the two mechanisms agree rather than one
 undermining the other.
 
-`TestSafetyContract_CorroboratedChainProducesHighRisk` · `TestAssessDoesNotManufactureConfidenceFromRepetition`
+Categories answer *how many kinds of evidence*. They do not answer *how many
+sensors said so*, and a single ingest credential can supply every category at
+once. So where a deployment authenticates its producers, a second count is ANDed
+onto the first:
+
+<!-- griefer:claims
+value "min_evidence_producers :=" rego:policies/rego/griefer/response.rego#min_evidence_producers
+value "min_automated_risk_score" rego:policies/rego/griefer/response.rego#min_automated_risk_score
+-->
+```rego
+min_evidence_producers := 2
+
+evidence_producers := object.get(input.incident, "evidence_producers", [])
+evidence_producer_count := count({p | some p in evidence_producers})
+```
+
+Automation also needs `min_automated_risk_score` 40 or above, unchanged by this
+rule: the producer count says *who corroborated*, never *how bad it is*.
+
+The threshold is compiled, not configured, for the same reason as the category
+bar: a safety threshold an operator can lower under pressure is one that will be
+lowered under pressure, and the incident that lowers it is the one it exists for.
+
+**The limit, stated rather than glossed.** The producer count is read with a
+default, and a count of zero does not fire the rule. A deployment that has
+enrolled no producers therefore sits behind the category bar alone — where one
+holder of the ingest credential can still satisfy corroboration by sending
+findings in two categories. That deployment is not protected against this attack;
+it is protected against the noise the category bar was built for.
+
+This is a deliberate trade, not an oversight. Requiring the field outright would
+couple the policy bundle to the binary: an older binary omits it, `input_complete`
+fails, and this policy defaults to deny — a deployment order that refuses every
+action until the two halves match. Enrolling producers is the operator's step,
+and `docs/security/PRODUCER_AUTH.md` describes it. Until they take it,
+`TestSafetyContract_OneCredentialSatisfiesTheCorroborationGate` holds the weaker
+guarantee open in the test suite so it cannot be quietly claimed away.
+
+`TestSafetyContract_CorroboratedChainProducesHighRisk` ·
+`TestAssessDoesNotManufactureConfidenceFromRepetition` ·
+`TestSafetyContract_TwoProducersClearTheCorroborationBar` ·
+`TestSafetyContract_OneProducerRequiresApproval` · ADR 0010
 
 ### 3. Destructive actions are denied unconditionally
 

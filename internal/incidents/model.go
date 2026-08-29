@@ -213,7 +213,12 @@ type PolicyDecision struct {
 	// Recorded because the verdict turned on it: without the number, a reader
 	// of the trail cannot tell a two-category allow from a five-category one,
 	// and the corroboration rule is the one most worth being able to re-read.
-	EvidenceCategoryCount int       `json:"evidence_category_count"`
+	EvidenceCategoryCount int `json:"evidence_category_count"`
+	// EvidenceProducerCount is the number of distinct authenticated producers
+	// the policy counted. Zero means the deployment enrols none, which is a
+	// materially different verdict from one that cleared the producer bar — and
+	// a reader of the trail should not have to guess which they are looking at.
+	EvidenceProducerCount int       `json:"evidence_producer_count"`
 	EvaluatedAt           time.Time `json:"evaluated_at"`
 	// FailClosed is true when the decision was produced by GRIEFER's
 	// fail-closed path because the Policy Kernel could not be reached.

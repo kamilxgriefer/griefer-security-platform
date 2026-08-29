@@ -292,7 +292,7 @@ func (c Config) Validate() ([]Warning, error) {
 			if strings.Contains(key, PlaceholderSecretMarker) {
 				return nil, fmt.Errorf(
 					"config: the key for producer %q still holds the placeholder from .env.example. "+
-						"Run `make secrets` to generate real values", p.Name)
+						"Generate one with `openssl rand -base64 48`", p.Name)
 			}
 		}
 	}

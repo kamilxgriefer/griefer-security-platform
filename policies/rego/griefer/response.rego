@@ -36,6 +36,19 @@ min_evidence_categories := 2
 # corroboration.
 min_automated_risk_score := 40
 
+# Distinct authenticated producers required before automation, in deployments
+# that authenticate producers at all.
+#
+# ANDed with the category bar, never replacing it: categories answer "how many
+# kinds of evidence", producers answer "how many sensors said so". ADR 0005
+# rejected sources AS the bar and invited them as a dimension; ADR 0010 takes up
+# the invitation.
+#
+# Compiled rather than configured, for 0005's reason: a safety threshold an
+# operator can lower under pressure is one that will be lowered under pressure,
+# and the incident that lowers it is the one it exists for.
+min_evidence_producers := 2
+
 # ---------------------------------------------------------------------------
 # Input validation — fail closed on anything malformed
 # ---------------------------------------------------------------------------
@@ -116,6 +129,41 @@ approval_reasons contains reason if {
 	reason := sprintf("Isolation-class action %q cannot be triggered automatically by a single weak signal.", [input.action.type])
 }
 
+# evidence_producers is read with a DEFAULT rather than required in
+# input_complete.
+#
+# Requiring it would make the bundle and the binary order-dependent: an older
+# binary omits the field, input_complete would fail, and this policy's default
+# is deny — so a bundle deployed first would refuse every action until they
+# matched. With a default the field's absence degrades to the pre-producer
+# behaviour instead, and the two halves may be deployed in either order.
+#
+# A NON-EMPTY list is the deployment saying it attributes telemetry: once one
+# producer is enrolled, ingest refuses unattributed events, so every finding
+# carries one. An empty list is a deployment that has enrolled nobody, and it is
+# held to the category bar alone — which one caller can satisfy, and which
+# docs/SAFETY_MODEL.md says out loud rather than pretending otherwise.
+evidence_producers := object.get(input.incident, "evidence_producers", [])
+
+evidence_producer_count := count({p | some p in evidence_producers})
+
+approval_reasons contains reason if {
+	input.request.automated == true
+	evidence_producer_count > 0
+	evidence_producer_count < min_evidence_producers
+	reason := sprintf("Automated response requires evidence from at least %d distinct authenticated producers; this incident has %d.", [min_evidence_producers, evidence_producer_count])
+}
+
+# Isolation gets its own, for the reason it has its own category rule: a refusal
+# should name the action class rather than arrive as a generic message.
+approval_reasons contains reason if {
+	input.action.isolation == true
+	input.request.automated == true
+	evidence_producer_count > 0
+	evidence_producer_count < min_evidence_producers
+	reason := sprintf("Isolation-class action %q cannot be triggered automatically on evidence from a single producer.", [input.action.type])
+}
+
 approval_reasons contains reason if {
 	input.request.automated == true
 	input.incident.risk_score < min_automated_risk_score
@@ -187,6 +235,7 @@ decision := {
 	"policy_package": "griefer.response",
 	"policy_version": policy_version,
 	"evidence_category_count": evidence_category_count,
+	"evidence_producer_count": evidence_producer_count,
 }
 
 # Requirement 7: a decision without a reason is not a decision. If reason
